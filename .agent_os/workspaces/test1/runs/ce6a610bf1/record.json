@@ -1,0 +1,6 @@
+{
+  "run_id": "ce6a610bf1",
+  "agent_name": "agent-ce6a61",
+  "prompt": "[Agent OS Communication Protocol]\nYou are running in an isolated subprocess. Your normal text output is NOT visible to the parent agent. You communicate with the parent via:\n  - python .agent_os/send.py --msg \"...\"     (send progress to parent)\n\nIMPORTANT - Workspace:\n  Your shared workspace is at: .agent_os\\workspaces\\sgr_full_pipeline_mquk0eus  #AOS_WS\n  All files you create/read should be placed in the workspace directory.\n  Use the workspace path directly or cd to it.\n\nIMPORTANT - Completion",
+  "started_at": "2026-06-26T14:32:53.493212"
+}

@@ -1,0 +1,33 @@
+{
+  "name": "code_review",
+  "description": "代码审查流水线：编码 → 审查 → 修复",
+  "steps": [
+    {
+      "id": "coding",
+      "name": "编码实现",
+      "prompt": "根据用户需求实现代码。在 workspace 下创建必要的源文件。完成后用 report.py 汇报结果。",
+      "depends_on": [],
+      "agent_name": null,
+      "model": null,
+      "type": "generative"
+    },
+    {
+      "id": "review",
+      "name": "代码审查",
+      "prompt": "审查 workspace 下的代码，输出 review.md 包含：代码质量、潜在问题、改进建议。",
+      "depends_on": ["coding"],
+      "agent_name": null,
+      "model": null,
+      "type": "generative"
+    },
+    {
+      "id": "fix",
+      "name": "修复问题",
+      "prompt": "根据 review.md 的审查意见修复代码问题。修复后更新 review.md 标注已修复项。",
+      "depends_on": ["review"],
+      "agent_name": null,
+      "model": null,
+      "type": "generative"
+    }
+  ]
+}

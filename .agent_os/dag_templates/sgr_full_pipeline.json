@@ -1,0 +1,168 @@
+{
+  "name": "sgr_full_pipeline",
+  "description": "SGR 完整开发流水线：初始化变更 → 需求探索 → 技术点提取与讨论 → 工件生成与审查 → 代码实现 → 验证 → 测试设计/实现/执行 → 修复循环",
+  "steps": [
+    {
+      "id": "init_change",
+      "name": "初始化变更",
+      "prompt": "use_skill(sgr-init-change)｜变更名称从 $AGENT_OS_WORKSPACE/.change_name 文件读取｜注意：确认变更名称后，将其写入 .change_name 文件供后续 agent 使用。",
+      "depends_on": [],
+      "agent_name": null,
+      "model": null,
+      "type": "interactive"
+    },
+    {
+      "id": "explore_req",
+      "name": "需求探索",
+      "prompt": "use_skill(sgr-explore-req)｜从 .change_name 读取变更名称｜如果已有 requirement.md 则直接读取总结，否则需要用户提供需求。",
+      "depends_on": ["init_change"],
+      "agent_name": null,
+      "model": null,
+      "type": "interactive"
+    },
+    {
+      "id": "extract_tech",
+      "name": "提取技术点",
+      "prompt": "use_skill(sgr-explore-tech-extract)｜从 .change_name 读取变更名称｜从需求文档中提取技术点清单，列出可选方案，生成 tech-decisions.md。",
+      "depends_on": ["explore_req"],
+      "agent_name": null,
+      "model": null,
+      "type": "generative"
+    },
+    {
+      "id": "discuss_tech",
+      "name": "讨论技术点",
+      "prompt": "读取 tech-decisions.md，找出所有状态为'待讨论'的技术点。使用 spawn.py 为每个技术点启动一个交互式 agent 与用户深入讨论：python .agent_os/spawn.py --tasks '[...]' --wait all。注意：spawn task 的 type 必须设为 \"interactive\"。spawn 后立即结束对话等 OS resume。resume 后检查 discussions/ 目录下的讨论结果，更新 tech-decisions.md 中的状态，然后调用 python .agent_os/report.py --result '...' 完成。",
+      "depends_on": ["extract_tech"],
+      "agent_name": null,
+      "model": null,
+      "type": "interactive"
+    },
+    {
+      "id": "gen_artifact_1",
+      "name": "生成工件 1",
+      "prompt": "use_skill(sgr-gen-artifact)｜从 .change_name 读取变更名称｜生成下一个 OpenSpec 工件（proposal）。",
+      "depends_on": ["explore_req", "discuss_tech"],
+      "agent_name": null,
+      "model": null,
+      "type": "generative"
+    },
+    {
+      "id": "review_1",
+      "name": "审查工件 1",
+      "prompt": "use_skill(sgr-explore)｜从 .change_name 读取变更名称｜审查已生成的 proposal，对照需求文档检查遗漏、矛盾或疑问，向用户确认。",
+      "depends_on": ["gen_artifact_1"],
+      "agent_name": null,
+      "model": null,
+      "type": "interactive"
+    },
+    {
+      "id": "gen_artifact_2",
+      "name": "生成工件 2",
+      "prompt": "use_skill(sgr-gen-artifact)｜从 .change_name 读取变更名称｜生成下一个 OpenSpec 工件（design）。",
+      "depends_on": ["review_1"],
+      "agent_name": null,
+      "model": null,
+      "type": "generative"
+    },
+    {
+      "id": "review_2",
+      "name": "审查工件 2",
+      "prompt": "use_skill(sgr-explore)｜从 .change_name 读取变更名称｜审查已生成的 design，对照需求文档检查遗漏、矛盾或疑问，向用户确认。",
+      "depends_on": ["gen_artifact_2"],
+      "agent_name": null,
+      "model": null,
+      "type": "interactive"
+    },
+    {
+      "id": "gen_artifact_3",
+      "name": "生成工件 3",
+      "prompt": "use_skill(sgr-gen-artifact)｜从 .change_name 读取变更名称｜生成下一个 OpenSpec 工件（specs）。",
+      "depends_on": ["review_2"],
+      "agent_name": null,
+      "model": null,
+      "type": "generative"
+    },
+    {
+      "id": "review_3",
+      "name": "审查工件 3",
+      "prompt": "use_skill(sgr-explore)｜从 .change_name 读取变更名称｜审查已生成的 specs，对照需求文档检查遗漏、矛盾或疑问，向用户确认。",
+      "depends_on": ["gen_artifact_3"],
+      "agent_name": null,
+      "model": null,
+      "type": "interactive"
+    },
+    {
+      "id": "gen_artifact_4",
+      "name": "生成工件 4",
+      "prompt": "use_skill(sgr-gen-artifact)｜从 .change_name 读取变更名称｜生成下一个 OpenSpec 工件（tasks）。",
+      "depends_on": ["review_3"],
+      "agent_name": null,
+      "model": null,
+      "type": "generative"
+    },
+    {
+      "id": "review_4",
+      "name": "审查工件 4",
+      "prompt": "use_skill(sgr-explore)｜从 .change_name 读取变更名称｜审查已生成的 tasks，对照需求文档检查遗漏、矛盾或疑问，向用户确认。",
+      "depends_on": ["gen_artifact_4"],
+      "agent_name": null,
+      "model": null,
+      "type": "interactive"
+    },
+    {
+      "id": "apply_code",
+      "name": "实现代码",
+      "prompt": "use_skill(sgr-apply-code)｜从 .change_name 读取变更名称｜调用 openspec-apply-change 实现变更中的所有任务。",
+      "depends_on": ["review_4", "discuss_tech"],
+      "agent_name": null,
+      "model": null,
+      "type": "generative"
+    },
+    {
+      "id": "verify_impl",
+      "name": "验证实现",
+      "prompt": "use_skill(sgr-verify-impl)｜从 .change_name 读取变更名称｜验证实现的完整性、正确性、连贯性。",
+      "depends_on": ["apply_code"],
+      "agent_name": null,
+      "model": null,
+      "type": "generative"
+    },
+    {
+      "id": "gen_tests_design",
+      "name": "测试设计",
+      "prompt": "use_skill(sgr-gen-tests-design)｜从 .change_name 读取变更名称｜根据工件和实现代码，完成测试用例的设计阶段，输出 test-cases.md。",
+      "depends_on": ["verify_impl"],
+      "agent_name": null,
+      "model": null,
+      "type": "generative"
+    },
+    {
+      "id": "gen_tests_impl",
+      "name": "测试实现",
+      "prompt": "use_skill(sgr-gen-tests-impl)｜从 .change_name 读取变更名称｜读取 test-cases.md，生成可执行测试计划 test-plan.md。",
+      "depends_on": ["gen_tests_design"],
+      "agent_name": null,
+      "model": null,
+      "type": "generative"
+    },
+    {
+      "id": "run_tests",
+      "name": "执行测试",
+      "prompt": "use_skill(sgr-run-tests)｜从 .change_name 读取变更名称｜构建测试环境，执行所有测试用例。",
+      "depends_on": ["gen_tests_impl"],
+      "agent_name": null,
+      "model": null,
+      "type": "generative"
+    },
+    {
+      "id": "fix_loop",
+      "name": "修复循环",
+      "prompt": "use_skill(sgr-fix-loop)｜从 .change_name 读取变更名称｜按 bug 分组失败用例，制定修复计划，逐组修复并验证。",
+      "depends_on": ["run_tests"],
+      "agent_name": null,
+      "model": null,
+      "type": "generative"
+    }
+  ]
+}

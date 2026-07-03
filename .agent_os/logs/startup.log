@@ -1,0 +1,43 @@
+2026-06-26 15:29:07,805 [INFO] ProcessManager: cli=C:\Users\tweijieliu\AppData\Roaming\npm\codebuddy.CMD
+2026-06-26 15:29:07,805 [INFO] ProcessManager: bypassing .CMD shim -> node C:\Users\tweijieliu\AppData\Roaming\npm\node_modules\@tencent-ai\codebuddy-code\bin\codebuddy
+2026-06-26 15:29:07,806 [INFO] loaded 1 historical runs (1 unique) from 2 files
+2026-06-26 15:29:07,809 [DEBUG] Using proactor: IocpProactor
+2026-06-26 15:29:12,571 [INFO] start_run: run_id=9a8d11636f, session_id=1dc90e0b-89a7, prompt=请继续执行 DAG，任务名: test1, interactive=False, model=None
+2026-06-26 15:29:12,571 [INFO] [9a8d1163] Reused workspace: G:\svn\trunk_cn\dragon\game\.agent_os\workspaces\test1
+2026-06-26 15:29:12,571 [DEBUG] [9a8d1163] CMD: ['node', 'C:\\Users\\tweijieliu\\AppData\\Roaming\\npm\\node_modules\\@tencent-ai\\codebuddy-code\\bin\\codebuddy', '-p', '请继续执行 DAG，任务名: test1']... (prompt len=20, system_prompt len=1253, args after -p: ['--permission-mode', '--output-format', '--verbose', '--agent', '--session-id', '--append-system-prompt'])
+2026-06-26 15:29:13,039 [DEBUG] [9a8d1163] Reader started
+2026-06-26 15:29:18,192 [DEBUG] [9a8d1163] First line processed, session_id=True
+2026-06-26 15:29:38,709 [DEBUG] spawn_children lookup: parent_run_id=9a8d11636f, found=True, session_id=1dc90e0b-89a7-4ecc-80f5-0c7fed08cc81
+2026-06-26 15:29:38,709 [INFO] spawn_children: parent=9a8d1163, parent_session_id=YES, tasks=1, wait=all, parent_model=None, parent_workspace=G:\svn\trunk_cn\dragon\game\.agent_os\workspaces\test1
+2026-06-26 15:29:38,710 [INFO] start_run: run_id=be4f7f78d0, session_id=dc1c8567-5065, prompt=[Agent OS Communication Protocol]
+You are running , interactive=True, model=None
+2026-06-26 15:29:38,710 [INFO] [be4f7f78] Inherited workspace from parent: G:\svn\trunk_cn\dragon\game\.agent_os\workspaces\test1
+2026-06-26 15:29:38,710 [INFO] [be4f7f78] STEP_ID from env: init_change
+2026-06-26 15:29:38,710 [DEBUG] [be4f7f78] CMD: ['node', 'C:\\Users\\tweijieliu\\AppData\\Roaming\\npm\\node_modules\\@tencent-ai\\codebuddy-code\\bin\\codebuddy', '-p', '[Agent OS Communication Protocol]\nYou are running in an isolated subprocess. Your normal text output is NOT visible to the parent agent. You communicate with the parent via:\n  - python .agent_os/send.py --msg "..."     (send progress to parent)\n\nIMPORTANT - Workspace:\n  Your shared workspace is at: .agent_os\\workspaces\\test1  #AOS_WS\n  All files you create/read should be placed in the workspace directory.\n  Use the workspace path directly or cd to it.\n\nIMPORTANT - Completion:\n  This is an INTERACTIVE task. Do NOT call report.py. The user will click Done in the dashboard when satisfied.\n[/Agent OS Communication Protocol]\n\n[Your Task]\nuse_skill(sgr-init-change)｜变更名称从 $AGENT_OS_WORKSPACE/.change_name 文件读取｜注意：确认变更名称后，将其写入 .change_name 文件供后续 agent 使用。\n[/Your Task]']... (prompt len=769, system_prompt len=473, args after -p: ['--permission-mode', '--output-format', '--verbose', '--session-id', '--append-system-prompt'])
+2026-06-26 15:29:38,723 [DEBUG] [be4f7f78] Reader started
+2026-06-26 15:29:38,724 [INFO] spawn_children: marked running ['init_change'] in G:\svn\trunk_cn\dragon\game\.agent_os\workspaces\test1
+2026-06-26 15:29:43,938 [DEBUG] [be4f7f78] First line processed, session_id=True
+2026-06-26 15:29:45,405 [INFO] [9a8d1163] Process exited: code=0, status=waiting, session_id=True, lines=11
+2026-06-26 15:29:45,406 [INFO] [9a8d1163] WAITING agent exited but children still running, keeping WAITING for resume
+2026-06-26 15:30:11,725 [INFO] start_run: run_id=9bbbb2f638, session_id=42facfb6-d709, prompt=请继续执行 DAG，任务名: test1, interactive=False, model=None
+2026-06-26 15:30:11,726 [INFO] [9bbbb2f6] Reused workspace: G:\svn\trunk_cn\dragon\game\.agent_os\workspaces\test1
+2026-06-26 15:30:11,726 [DEBUG] [9bbbb2f6] CMD: ['node', 'C:\\Users\\tweijieliu\\AppData\\Roaming\\npm\\node_modules\\@tencent-ai\\codebuddy-code\\bin\\codebuddy', '-p', '请继续执行 DAG，任务名: test1']... (prompt len=20, system_prompt len=1253, args after -p: ['--permission-mode', '--output-format', '--verbose', '--agent', '--session-id', '--append-system-prompt'])
+2026-06-26 15:30:11,775 [DEBUG] [9bbbb2f6] Reader started
+2026-06-26 15:30:16,603 [DEBUG] [9bbbb2f6] First line processed, session_id=True
+2026-06-26 15:30:37,247 [DEBUG] spawn_children lookup: parent_run_id=9bbbb2f638, found=True, session_id=42facfb6-d709-46e1-b772-094da4103bb6
+2026-06-26 15:30:37,247 [INFO] spawn_children: parent=9bbbb2f6, parent_session_id=YES, tasks=1, wait=all, parent_model=None, parent_workspace=G:\svn\trunk_cn\dragon\game\.agent_os\workspaces\test1
+2026-06-26 15:30:37,247 [INFO] start_run: run_id=0c4572b0b0, session_id=36a55ab3-bfc1, prompt=[Agent OS Communication Protocol]
+You are running , interactive=True, model=None
+2026-06-26 15:30:37,247 [INFO] [0c4572b0] Inherited workspace from parent: G:\svn\trunk_cn\dragon\game\.agent_os\workspaces\test1
+2026-06-26 15:30:37,247 [INFO] [0c4572b0] STEP_ID from env: init_change
+2026-06-26 15:30:37,247 [DEBUG] [0c4572b0] CMD: ['node', 'C:\\Users\\tweijieliu\\AppData\\Roaming\\npm\\node_modules\\@tencent-ai\\codebuddy-code\\bin\\codebuddy', '-p', '[Agent OS Communication Protocol]\nYou are running in an isolated subprocess. Your normal text output is NOT visible to the parent agent. You communicate with the parent via:\n  - python .agent_os/send.py --msg "..."     (send progress to parent)\n\nIMPORTANT - Workspace:\n  Your shared workspace is at: .agent_os\\workspaces\\test1  #AOS_WS\n  All files you create/read should be placed in the workspace directory.\n  Use the workspace path directly or cd to it.\n\nIMPORTANT - Completion:\n  This is an INTERACTIVE task. Do NOT call report.py. The user will click Done in the dashboard when satisfied.\n[/Agent OS Communication Protocol]\n\n[Your Task]\nuse_skill(sgr-init-change)｜变更名称从 $AGENT_OS_WORKSPACE/.change_name 文件读取｜注意：确认变更名称后，将其写入 .change_name 文件供后续 agent 使用。\n[/Your Task]']... (prompt len=769, system_prompt len=473, args after -p: ['--permission-mode', '--output-format', '--verbose', '--session-id', '--append-system-prompt'])
+2026-06-26 15:30:37,260 [DEBUG] [0c4572b0] Reader started
+2026-06-26 15:30:37,261 [INFO] spawn_children: marked running ['init_change'] in G:\svn\trunk_cn\dragon\game\.agent_os\workspaces\test1
+2026-06-26 15:30:42,382 [DEBUG] [0c4572b0] First line processed, session_id=True
+2026-06-26 15:30:45,576 [INFO] [9bbbb2f6] Process exited: code=0, status=waiting, session_id=True, lines=11
+2026-06-26 15:30:45,577 [INFO] [9bbbb2f6] WAITING agent exited but children still running, keeping WAITING for resume
+2026-06-26 15:30:55,059 [INFO] [0c4572b0] Process exited: code=1, status=stopped, session_id=True, lines=6
+2026-06-26 15:30:55,059 [DEBUG] [0c4572b0] Status already stopped, skip exit handler
+2026-06-26 15:31:08,777 [INFO] [be4f7f78] Process exited: code=1, status=running, session_id=True, lines=26
+2026-06-26 15:31:08,778 [DEBUG] [be4f7f78] Interactive - staying running
+2026-06-26 15:54:18,831 [WARNING] _parse_models_from_cli: 未能从 --help 解析出模型列表（可能因无 TTY 而超时）

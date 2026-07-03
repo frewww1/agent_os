@@ -1,0 +1,33 @@
+{
+  "name": "fe_pipeline",
+  "description": "前端开发流水线：设计 → 编码 → 测试",
+  "steps": [
+    {
+      "id": "fe_design",
+      "name": "前端设计",
+      "prompt": "创建 index.html，设计一个简洁美观的页面。包含基本的 HTML 结构和内联 CSS 样式。",
+      "depends_on": [],
+      "agent_name": null,
+      "model": null,
+      "type": "generative"
+    },
+    {
+      "id": "fe_coding",
+      "name": "前端编码",
+      "prompt": "在已有 index.html 基础上，增强 CSS 样式（添加动画、响应式布局、配色方案），创建 style.css 文件。",
+      "depends_on": ["fe_design"],
+      "agent_name": null,
+      "model": null,
+      "type": "generative"
+    },
+    {
+      "id": "fe_test",
+      "name": "前端测试",
+      "prompt": "创建 test.html 测试页面，验证 index.html 的功能完整性。包含基本的交互测试。",
+      "depends_on": ["fe_coding"],
+      "agent_name": null,
+      "model": null,
+      "type": "generative"
+    }
+  ]
+}

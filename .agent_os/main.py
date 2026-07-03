@@ -1,0 +1,85 @@
+"""
+Agent OS — Web terminal for Claude CLI.
+
+启动后打开浏览器访问 http://127.0.0.1:8420
+在输入框中输入 prompt，实时看到 Claude agent 的流式输出。
+
+Usage:
+    python .agent_os/main.py
+    python .agent_os/main.py --port 8420
+"""
+import argparse
+import importlib.util
+import os
+import sys
+import webbrowser
+from pathlib import Path
+
+import uvicorn
+
+# 此目录 .agent_os 因含 "." 前缀不能直接作为 Python 包名导入。
+# 用 importlib 把它注册为名为 "agent_os" 的虚拟包，使 dashboard/app.py 等
+# 子模块的相对导入（from ..process_manager import ...）能正常工作。
+_this_dir = Path(__file__).parent
+_pkg_name = "agent_os"
+if _pkg_name not in sys.modules:
+    _spec = importlib.util.spec_from_file_location(
+        _pkg_name,
+        _this_dir / "__init__.py",
+        submodule_search_locations=[str(_this_dir)],
+    )
+    _pkg = importlib.util.module_from_spec(_spec)
+    sys.modules[_pkg_name] = _pkg
+    _spec.loader.exec_module(_pkg)
+
+from agent_os.process_manager import ProcessManager
+from agent_os.dashboard.app import app, set_process_manager
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Agent OS - Web Terminal for Claude CLI")
+    parser.add_argument("--port", type=int, default=8420, help="Server port (default: 8420)")
+    parser.add_argument("--host", default="127.0.0.1", help="Server host (default: 127.0.0.1)")
+    parser.add_argument("--cli", default="codebuddy",
+                        help="Backend CLI command (default: codebuddy; also supports: claude, claude-internal)")
+    parser.add_argument("--model", default=None,
+                        help="Default model for all agents (e.g. claude-sonnet-4.6, gpt-5.1). "
+                             "None = use CLI default. Can be overridden per-agent in Dashboard.")
+    parser.add_argument("--root", default=None,
+                        help="Working directory for the CLI process (default: current directory)")
+    parser.add_argument("--no-browser", action="store_true", help="Don't auto-open browser")
+    args = parser.parse_args()
+
+    # Initialize process manager
+    # 默认 project_root 为 .agent_os 的父目录（即项目根目录 /game）
+    if args.root:
+        project_root = os.path.abspath(args.root)
+    else:
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    pm = ProcessManager(project_root=project_root, cli_command=args.cli, port=args.port,
+                        default_model=args.model)
+    set_process_manager(pm)
+
+    url = f"http://{args.host}:{args.port}"
+    print()
+    print("=" * 48)
+    print("  Agent OS — Web Terminal for Claude CLI")
+    print("=" * 48)
+    print(f"  URL:     {url}")
+    print(f"  CLI:     {args.cli}")
+    if args.model:
+        print(f"  Model:   {args.model}")
+    print(f"  Root:    {project_root}")
+    print("=" * 48)
+    print()
+
+    # Auto-open browser
+    if not args.no_browser:
+        webbrowser.open(url)
+
+    # Start server
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+
+
+if __name__ == "__main__":
+    main()

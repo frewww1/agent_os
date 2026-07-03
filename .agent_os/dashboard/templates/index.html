@@ -1,0 +1,2102 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent OS</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.10.0/build/styles/github-dark.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.10.0/build/highlight.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/diff@5.2.0/dist/diff.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/fuse.js@7.0.0/dist/fuse.min.js"></script>
+</head>
+<body>
+<div class="layout">
+    <!-- Sidebar: Agent Tree -->
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <h1>Agent OS</h1>
+            <div class="sidebar-actions">
+                <button class="btn-icon" title="启动 DAG 编排" onclick="toggleDagQuickstart()">🚀</button>
+                <button class="btn-icon" title="Clear completed runs (⌫)" onclick="clearCompleted()">⌫</button>
+                <button class="btn-new" onclick="newChat()">+ New</button>
+            </div>
+        </div>
+        <div class="sidebar-search" id="sidebarSearchWrap">
+            <input type="text" id="sidebarSearch" placeholder="Search agents…  ( / )" autocomplete="off" />
+            <button class="sidebar-search-clear" onclick="clearSidebarSearch()" title="Clear (Esc)">✕</button>
+        </div>
+        <div class="tree-container" id="treeContainer"></div>
+        <div class="sidebar-footer">
+            <span class="stats" id="sidebarStats">0 runs</span>
+            <span class="kbd-hint"><kbd>?</kbd> help</span>
+        </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main">
+        <header class="conv-header">
+            <div class="conv-title-wrap">
+                <div class="conv-title" id="convTitle" title="Click to rename">No agent selected</div>
+                <div class="conv-subtitle" id="convSubtitle"></div>
+            </div>
+            <span class="status-badge" id="headerStatusBadge" style="display:none"></span>
+            <div class="conv-actions" id="convActions">
+                <button class="btn-icon" title="Export as Markdown" onclick="exportRun('md')">↓ md</button>
+                <button class="btn-icon" title="Export as JSON" onclick="exportRun('json')">↓ json</button>
+            </div>
+            <div class="conv-meta" id="convMeta"></div>
+        </header>
+
+        <div class="output-area" id="outputArea">
+            <div class="output-placeholder" id="placeholder">
+                <div class="placeholder-icon">◉</div>
+                <p>Start a Claude agent below.</p>
+                <p class="hint">Agents can spawn sub-agents. Each sub-agent talks to the parent only via <code>send.py</code> (progress) and <code>report.py</code> (final result). Press <kbd>?</kbd> for shortcuts.</p>
+            </div>
+            <div class="conv-stream" id="convStream"></div>
+            <div class="mini-map" id="miniMap"></div>
+            <button id="jumpBtn" class="jump-btn" onclick="jumpToBottom()" style="display:none">↓ 跳转到底部 <span class="unread-count" id="unreadCount" style="display:none"></span></button>
+        </div>
+
+        <!-- DAG graph panel -->
+        <div class="dag-panel" id="dagPanel" style="display:none">
+            <div class="dag-header" onclick="toggleDag()">
+                <span class="dag-title">🔀 DAG 编排图</span>
+                <span class="dag-count" id="dagCount"></span>
+                <span class="dag-toggle" id="dagToggle">▾</span>
+            </div>
+            <div class="dag-body" id="dagBody">
+                <div class="dag-graph" id="dagGraph">
+                    <svg id="dagSvg" width="100%" height="100%"></svg>
+                </div>
+                <div class="dag-legend">
+                    <span class="dag-legend-item"><span class="dag-legend-dot pending"></span> pending</span>
+                    <span class="dag-legend-item"><span class="dag-legend-dot running"></span> running</span>
+                    <span class="dag-legend-item"><span class="dag-legend-dot done"></span> done</span>
+                    <span class="dag-legend-item"><span class="dag-legend-dot failed"></span> failed</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Workspace panel -->
+        <div class="workspace-panel" id="workspacePanel" style="display:none">
+            <div class="workspace-header" onclick="toggleWorkspace()">
+                <span class="workspace-title">📁 Workspace</span>
+                <span class="workspace-branch" id="workspaceBranch"></span>
+                <span class="workspace-count" id="workspaceCount"></span>
+                <span class="workspace-toggle" id="workspaceToggle">▾</span>
+            </div>
+            <div class="workspace-body" id="workspaceBody">
+                <!-- 分支管理区域 -->
+                <div class="branch-section" id="branchSection" style="display:none">
+                    <div class="branch-section-header">
+                        <span class="branch-section-title">🌿 分支</span>
+                        <button class="btn-sm" onclick="showCreateBranch()" title="从当前 commit 创建新分支">+ 新分支</button>
+                    </div>
+                    <div class="branch-list" id="branchList"></div>
+                    <div class="branch-create" id="branchCreate" style="display:none">
+                        <input type="text" id="newBranchName" placeholder="分支名" />
+                        <button class="btn-sm" onclick="createBranch()">创建</button>
+                        <button class="btn-sm" onclick="hideCreateBranch()">取消</button>
+                    </div>
+                </div>
+                <div class="workspace-files" id="workspaceFiles">
+                    <div class="workspace-empty">No files</div>
+                </div>
+                <div class="workspace-preview" id="workspacePreview" style="display:none">
+                    <div class="preview-header">
+                        <span class="preview-path" id="previewPath"></span>
+                        <button class="preview-close" onclick="closePreview()">✕</button>
+                    </div>
+                    <pre class="preview-content" id="previewContent"></pre>
+                </div>
+            </div>
+        </div>
+
+        <div class="input-area">
+            <div class="dag-quickstart" id="dagQuickstart" style="display:none">
+                <div class="dag-qs-header">
+                    <span class="dag-qs-title">🚀 快速启动 DAG 编排</span>
+                    <button class="dag-qs-close" onclick="toggleDagQuickstart()">✕</button>
+                </div>
+                <div class="dag-qs-body">
+                    <div class="dag-qs-row">
+                        <label>模式</label>
+                        <div class="dag-qs-mode">
+                            <label class="dag-qs-radio"><input type="radio" name="dagMode" value="new" checked onchange="onDagModeChange()"> 新建</label>
+                            <label class="dag-qs-radio"><input type="radio" name="dagMode" value="resume" onchange="onDagModeChange()"> 继续已有</label>
+                        </div>
+                    </div>
+                    <div id="dagNewRow1" class="dag-qs-row">
+                        <label>DAG 模板</label>
+                        <select id="dagTemplate" onchange="onDagTemplateChange()">
+                            <option value="">-- 选择模板 --</option>
+                        </select>
+                    </div>
+                    <div id="dagResumeRow1" class="dag-qs-row" style="display:none">
+                        <label>已有 Workspace</label>
+                        <select id="dagExistingWs" onchange="onDagExistingWsChange()">
+                            <option value="">-- 选择 workspace --</option>
+                        </select>
+                    </div>
+                    <div class="dag-qs-row">
+                        <label>任务名</label>
+                        <input type="text" id="dagWorkspace" placeholder="例如 my_project" value="" />
+                    </div>
+                    <div class="dag-qs-preview" id="dagQsPreview" style="display:none">
+                        <div class="dag-qs-preview-title">预览</div>
+                        <div class="dag-qs-preview-steps" id="dagQsSteps"></div>
+                    </div>
+                    <button class="dag-qs-run" onclick="runDagTemplate()">▶ 执行</button>
+                </div>
+            </div>
+            <div class="input-wrap">
+                <textarea id="promptInput" placeholder="Message your agent…  (Ctrl+Enter to send,  / for commands)" rows="1"></textarea>
+                <div class="input-toolbar">
+                    <label class="model-picker">
+                        <span class="model-picker-label">Model</span>
+                        <select id="modelSelect">
+                            <option value="">Default</option>
+                        </select>
+                    </label>
+                    <span class="input-hint"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> send</span>
+                </div>
+            </div>
+            <div class="input-actions">
+                <button id="sendBtn" onclick="send()">Send</button>
+                <button id="stopBtn" onclick="stopCurrent()" class="btn-stop" style="display:none">Stop</button>
+            </div>
+        </div>
+
+        <div class="status-bar">
+            <span class="status-indicator" id="statusIndicator"></span>
+            <span id="statusText">Ready</span>
+            <span id="sessionInfo" class="session-info"></span>
+        </div>
+    </main>
+</div>
+
+<!-- Slash command completions popup (fixed, outside any overflow container) -->
+<div class="slash-menu" id="slashMenu" style="display:none"></div>
+
+<!-- Toast notifications -->
+<div class="toast-stack" id="toastStack"></div>
+
+<!-- Modal layer (command palette / help / context menu container) -->
+<div id="modalLayer"></div>
+
+<script>
+let currentRunId = null;
+let eventSource = null;
+let renderedSeq = 0;
+let autoScroll = true;
+let unreadEvents = 0;
+const STATUS_LABEL = {
+    running: 'Running…',
+    completed: 'Completed',
+    failed: 'Failed',
+    stopped: 'Stopped',
+    waiting: 'Waiting on children',
+};
+
+document.getElementById('promptInput').addEventListener('keydown', (e) => {
+    if (slashMenuHandleKey(e)) return;
+    if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); send(); }
+});
+
+const _ta = document.getElementById('promptInput');
+_ta.addEventListener('input', () => {
+    _ta.style.height = 'auto';
+    _ta.style.height = Math.min(_ta.scrollHeight, 200) + 'px';
+    slashMenuOnInput();
+});
+
+document.getElementById('outputArea').addEventListener('scroll', (e) => {
+    const el = e.target;
+    const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+    // 用户在底部 80px 内才视为"跟随"，否则视为"在阅读"，新事件不打断
+    const wasAuto = autoScroll;
+    autoScroll = dist < 80;
+    if (autoScroll && !wasAuto) {
+        unreadEvents = 0;  // 回到底部清零
+    }
+    updateJumpHint();
+});
+
+function updateJumpHint() {
+    const btn = document.getElementById('jumpBtn');
+    if (!btn) return;
+    btn.style.display = autoScroll ? 'none' : 'flex';
+    const counter = document.getElementById('unreadCount');
+    if (counter) {
+        counter.textContent = unreadEvents > 0 ? unreadEvents : '';
+        counter.style.display = unreadEvents > 0 ? '' : 'none';
+    }
+}
+
+function showPlaceholder(show) {
+    const ph = document.getElementById('placeholder');
+    const stream = document.getElementById('convStream');
+    // 若 stream 已有内容，强制隐藏 placeholder
+    const hasContent = stream && stream.children.length > 0;
+    if (show && !hasContent) {
+        ph.style.display = 'flex';
+        stream.style.display = 'none';
+    } else {
+        ph.style.display = 'none';
+        stream.style.display = 'flex';
+    }
+}
+
+function newChat() {
+    currentRunId = null;
+    renderedSeq = 0;
+    unreadEvents = 0;
+    document.getElementById('convStream').innerHTML = '';
+    showPlaceholder(true);
+    document.getElementById('convTitle').textContent = 'No agent selected';
+    document.getElementById('convMeta').textContent = '';
+    document.getElementById('sessionInfo').textContent = '';
+    setStatus('', 'Ready');
+    document.getElementById('dagPanel').style.display = 'none';
+    document.getElementById('promptInput').focus();
+    document.getElementById('workspacePanel').style.display = 'none';
+    document.getElementById('dagQuickstart').style.display = 'none';
+    updateJumpHint();
+}
+
+// ============================================================
+// DAG 快速启动（从模板文件加载 + 使用 dag_orchestrator skill）
+// ============================================================
+let DAG_TEMPLATES = [];
+let dagQuickstartVisible = false;
+
+function toggleDagQuickstart() {
+    dagQuickstartVisible = !dagQuickstartVisible;
+    const el = document.getElementById('dagQuickstart');
+    el.style.display = dagQuickstartVisible ? '' : 'none';
+    if (dagQuickstartVisible) {
+        loadDagTemplates();
+        loadDagExistingWorkspaces();
+    }
+}
+
+async function loadDagTemplates() {
+    const sel = document.getElementById('dagTemplate');
+    sel.innerHTML = '<option value="">-- 选择模板 --</option>';
+    try {
+        const resp = await fetch('/api/dag/templates');
+        const data = await resp.json();
+        DAG_TEMPLATES = data.templates || [];
+        DAG_TEMPLATES.forEach(t => {
+            sel.innerHTML += `<option value="${t.id}">${t.name} — ${t.description}</option>`;
+        });
+    } catch {
+        sel.innerHTML += '<option value="" disabled>加载模板失败</option>';
+    }
+}
+
+async function loadDagExistingWorkspaces() {
+    const sel = document.getElementById('dagExistingWs');
+    sel.innerHTML = '<option value="">-- 选择 workspace --</option>';
+    try {
+        const resp = await fetch('/api/workspaces');
+        const data = await resp.json();
+        const wsList = data.workspaces || [];
+        // 只显示有 dag.json 的 workspace
+        wsList.filter(w => w.has_dag).forEach(w => {
+            const progress = w.step_count > 0 ? ` (${w.done_count}/${w.step_count} done` + (w.pending_count > 0 ? `, ${w.pending_count} pending)` : ')') : '';
+            sel.innerHTML += `<option value="${w.name}">${w.name}${progress}</option>`;
+        });
+    } catch {
+        sel.innerHTML += '<option value="" disabled>加载失败</option>';
+    }
+}
+
+function onDagModeChange() {
+    const mode = document.querySelector('input[name="dagMode"]:checked').value;
+    const isNew = mode === 'new';
+    document.getElementById('dagNewRow1').style.display = isNew ? '' : 'none';
+    document.getElementById('dagResumeRow1').style.display = isNew ? 'none' : '';
+    // 清空预览和任务名
+    document.getElementById('dagQsPreview').style.display = 'none';
+    document.getElementById('dagWorkspace').value = '';
+    if (!isNew) {
+        // resume 模式：任务名只读（从下拉选）
+        loadDagExistingWorkspaces();
+    }
+}
+
+async function onDagExistingWsChange() {
+    const wsName = document.getElementById('dagExistingWs').value;
+    const wsInput = document.getElementById('dagWorkspace');
+    const preview = document.getElementById('dagQsPreview');
+    const steps = document.getElementById('dagQsSteps');
+    if (!wsName) {
+        wsInput.value = '';
+        preview.style.display = 'none';
+        return;
+    }
+    wsInput.value = wsName;  // 任务名 = workspace 名
+    // 加载 dag 状态预览（用 /api/run/{any}/dag?workspace_id=xxx）
+    try {
+        const resp = await fetch(`/api/run/dummy/dag?workspace_id=${encodeURIComponent(wsName)}`);
+        const data = await resp.json();
+        if (data.steps && data.steps.length > 0) {
+            preview.style.display = '';
+            const statusIcon = (st) => {
+                if (st === 'done') return '✅';
+                if (st === 'running') return '🔄';
+                if (st === 'pending') return '⏳';
+                if (st === 'failed') return '❌';
+                return '❓';
+            };
+            steps.innerHTML = data.steps.map((s, i) => {
+                const deps = (s.depends_on || []).length > 0 ? ` ← ${s.depends_on.join(', ')}` : '';
+                const st = s.status || 'pending';
+                return `<div class="dag-qs-step">
+                    <span class="dag-qs-step-num">${statusIcon(st)}</span>
+                    <span class="dag-qs-step-name">${escapeHtml(s.name || s.id)}</span>
+                    <span class="dag-qs-step-deps">${deps}</span>
+                </div>`;
+            }).join('');
+        }
+    } catch {}
+}
+
+function onDagTemplateChange() {
+    const tid = document.getElementById('dagTemplate').value;
+    const tpl = DAG_TEMPLATES.find(t => t.id === tid);
+    const preview = document.getElementById('dagQsPreview');
+    const steps = document.getElementById('dagQsSteps');
+    if (tpl) {
+        preview.style.display = '';
+        steps.innerHTML = tpl.steps.map((s, i) => {
+            const deps = s.depends_on.length > 0 ? ` ← ${s.depends_on.join(', ')}` : '';
+            return `<div class="dag-qs-step">
+                <span class="dag-qs-step-num">${i+1}</span>
+                <span class="dag-qs-step-name">${escapeHtml(s.name)}</span>
+                <span class="dag-qs-step-deps">${deps}</span>
+            </div>`;
+        }).join('');
+        document.getElementById('dagWorkspace').value = tid + '_' + Date.now().toString(36);
+    } else {
+        preview.style.display = 'none';
+    }
+}
+
+async function runDagTemplate() {
+    const mode = document.querySelector('input[name="dagMode"]:checked').value;
+    const isResume = mode === 'resume';
+    const ws = document.getElementById("dagWorkspace").value.trim();
+    if (!ws) { alert(isResume ? "请选择已有 workspace" : "请输入任务名"); return; }
+
+    let tid = '', body;
+    if (isResume) {
+        body = {template_id: 'resume', workspace_name: ws, model: null, resume: true};
+    } else {
+        tid = document.getElementById("dagTemplate").value;
+        if (!tid) { alert("请选择 DAG 模板"); return; }
+        const model = document.getElementById("modelSelect").value || null;
+        body = {template_id: tid, workspace_name: ws, model};
+    }
+    const resp = await fetch("/api/dag/start", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(body)
+    });
+    const data = await resp.json();
+    if (data.error) { alert(data.error); return; }
+
+    currentRunId = data.run_id;
+    renderedSeq = 0;
+    document.getElementById("convStream").innerHTML = "";
+    showPlaceholder(false);
+    const titlePrefix = isResume ? "🔄 继续: " : "🚀 ";
+    const tpl = isResume ? {name: ws} : DAG_TEMPLATES.find(t => t.id === tid);
+    document.getElementById("convTitle").textContent = titlePrefix + (tpl ? tpl.name : ws);
+    connectStream(data.run_id);
+    setStatus("running", "Running…");
+    document.getElementById("stopBtn").style.display = "";
+    document.getElementById("dagQuickstart").style.display = "none";
+    dagQuickstartVisible = false;
+    refreshTree();
+}
+
+async function send() {
+    const prompt = document.getElementById('promptInput').value.trim();
+    if (!prompt) return;
+    if (currentRunId) {
+        await continueChat(prompt);
+    } else {
+        await startNew(prompt);
+    }
+    document.getElementById('promptInput').value = '';
+}
+
+async function startNew(prompt) {
+    const model = document.getElementById('modelSelect').value || null;
+    const resp = await fetch('/api/run', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({prompt, model})
+    });
+    const data = await resp.json();
+    if (data.error) { alert(data.error); return; }
+    currentRunId = data.run_id;
+    renderedSeq = 0;
+    document.getElementById('convStream').innerHTML = '';
+    showPlaceholder(false);
+    document.getElementById('convTitle').textContent = prompt.length > 80 ? prompt.slice(0, 80) + '…' : prompt;
+    connectStream(data.run_id);
+    setStatus('running', 'Running…');
+    document.getElementById('stopBtn').style.display = '';
+    refreshTree();
+}
+
+async function continueChat(prompt) {
+    const model = document.getElementById('modelSelect').value || null;
+    const resp = await fetch(`/api/run/${currentRunId}/continue`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({prompt, model})
+    });
+    const data = await resp.json();
+    if (data.error) { alert(data.error); return; }
+    connectStream(currentRunId);
+    setStatus('running', 'Running…');
+    document.getElementById('stopBtn').style.display = '';
+}
+
+function connectStream(runId) {
+    if (eventSource) { eventSource.close(); }
+    eventSource = new EventSource(`/api/run/${runId}/stream`);
+    eventSource.onmessage = (e) => {
+        if (currentRunId !== runId) return;  // 已切换到其他 agent，丢弃
+        let ev;
+        try { ev = JSON.parse(e.data); }
+        catch { ev = { kind: 'raw', text: e.data }; }
+        if (ev.seq && ev.seq <= renderedSeq) return;  // 防重
+        if (ev.seq) renderedSeq = ev.seq;
+        appendEvent(ev);
+    };
+    eventSource.addEventListener('done', (e) => {
+        eventSource.close(); eventSource = null;
+        const status = e.data;
+        setStatus(status, STATUS_LABEL[status] || status);
+        document.getElementById('stopBtn').style.display = 'none';
+        refreshTree();
+        updateSessionInfo();
+        if (currentRunId) { refreshWorkspace(currentRunId); refreshDag(currentRunId); }
+    });
+    eventSource.onerror = () => {
+        if (eventSource) { eventSource.close(); eventSource = null; }
+        setStatus('failed', 'Connection lost');
+        document.getElementById('stopBtn').style.display = 'none';
+    };
+}
+
+async function stopCurrent() {
+    if (!currentRunId) return;
+    await fetch(`/api/run/${currentRunId}/stop`, {method: 'POST'});
+}
+
+async function viewRun(runId) {
+    console.log('[viewRun] called with', runId, 'prev currentRunId=', currentRunId);
+    currentRunId = runId;
+    if (eventSource) { eventSource.close(); eventSource = null; }
+    // 先重置 renderedSeq，防止切换前的旧 stream 回调污染新 run 的序号
+    renderedSeq = 0;
+    const resp = await fetch(`/api/run/${runId}`);
+    if (resp.status === 404) { newChat(); refreshTree(); return; }
+    // 如果 fetch 期间用户又切走了，放弃渲染
+    if (currentRunId !== runId) return;
+    const data = await resp.json();
+    document.getElementById('convStream').innerHTML = '';
+    showPlaceholder(false);
+    renderedSeq = 0;
+
+    const title = (data.prompt || '').replace(/\[Agent OS Communication Protocol[^\]]*\]/g,'').replace(/\[\/?Your Task\]/g,'').trim();
+    document.getElementById('convTitle').textContent = title.length > 80 ? title.slice(0, 80) + '…' : (title || data.run_id);
+    updateConvSubtitle(data);
+
+    const events = data.events || [];
+    if (events.length === 0 && (data.output || []).length > 0) {
+        appendEvent({ kind: 'raw', text: data.output.join('\n') });
+    } else {
+        for (const ev of events) {
+            if (ev.seq) renderedSeq = ev.seq;
+            appendEvent(ev);
+        }
+    }
+    autoScroll = true;
+    unreadEvents = 0;
+    scrollToBottom();
+    if (data.status === 'running') {
+        connectStream(runId);
+        setStatus('running', STATUS_LABEL.running);
+        document.getElementById('stopBtn').style.display = '';
+    } else {
+        setStatus(data.status, STATUS_LABEL[data.status] || data.status);
+        document.getElementById('stopBtn').style.display = 'none';
+    }
+    updateSessionInfo();
+    refreshTree();
+    refreshWorkspace(runId);
+    refreshDag(runId);
+    // 切换会话后自动聚焦输入框
+    document.getElementById('promptInput').focus();
+}
+
+function updateConvSubtitle(data) {
+    const sub = document.getElementById('convSubtitle');
+    if (!sub) return;
+    const bits = [];
+    if (data.model) bits.push(data.model);
+    if (data.session_id) bits.push(`session ${data.session_id.slice(0,8)}`);
+    if (data.turns > 1) bits.push(`${data.turns} turns`);
+    if (data.children_run_ids && data.children_run_ids.length > 0) bits.push(`${data.children_run_ids.length} children`);
+    if (data.task_type === 'interactive') bits.push('interactive');
+    if (data.user_terminated) bits.push('ended by user');
+    sub.textContent = bits.join(' · ');
+}
+
+// === Event rendering ===
+
+function appendEvent(ev) {
+    const stream = document.getElementById('convStream');
+    const node = renderEvent(ev);
+    if (!node) return;
+    stream.appendChild(node);
+    if (autoScroll) {
+        scrollToBottom();
+    } else {
+        unreadEvents++;
+        updateJumpHint();
+    }
+}
+
+function scrollToBottom() {
+    const area = document.getElementById('outputArea');
+    area.scrollTop = area.scrollHeight;
+}
+
+function jumpToBottom() {
+    autoScroll = true;
+    unreadEvents = 0;
+    scrollToBottom();
+    updateJumpHint();
+}
+
+function renderEvent(ev) {
+    const k = ev.kind;
+    if (k === 'turn') return renderTurn(ev);
+    if (k === 'prompt') return renderPrompt(ev);
+    if (k === 'text') return renderText(ev);
+    if (k === 'tool_use') return renderToolUse(ev);
+    if (k === 'tool_result') return renderToolResult(ev);
+    if (k === 'send') return renderSend(ev);
+    if (k === 'report') return renderReport(ev);
+    if (k === 'user_done') return renderUserDone(ev);
+    if (k === 'error') return renderError(ev);
+    if (k === 'system') return renderSystem(ev);
+    if (k === 'raw') return renderRaw(ev);
+    return renderRaw(ev);
+}
+
+function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+}
+
+// === Markdown rendering ===
+if (window.marked) {
+    marked.setOptions({
+        gfm: true, breaks: true, headerIds: false, mangle: false,
+        highlight: (code, lang) => {
+            try {
+                if (lang && hljs.getLanguage(lang)) return hljs.highlight(code, { language: lang }).value;
+                return hljs.highlightAuto(code).value;
+            } catch { return code; }
+        }
+    });
+}
+
+function mdToHtml(text) {
+    if (!text) return '';
+    if (!window.marked || !window.DOMPurify) return escapeHtml(text);
+    try {
+        const html = marked.parse(text);
+        return DOMPurify.sanitize(html);
+    } catch (e) {
+        return escapeHtml(text);
+    }
+}
+
+function setMarkdownBody(body, text) {
+    body.innerHTML = mdToHtml(text);
+    // 二次确保所有代码块 hljs 染色（防止 marked 的 highlight 钩子未生效）
+    body.querySelectorAll('pre code').forEach(b => {
+        if (!b.classList.contains('hljs')) {
+            try { hljs.highlightElement(b); } catch {}
+        }
+    });
+}
+
+// Heuristic: tool input 是否看起来像代码（可染色）
+function detectLang(tool, summary) {
+    if (!summary) return '';
+    if (tool === 'Bash') return 'bash';
+    const s = summary.trim();
+    if (s.endsWith('.py') || /^[A-Za-z0-9_/\\.]+\.py$/.test(s)) return '';
+    if (/\.(ts|tsx)$/.test(s)) return '';
+    return '';
+}
+
+function renderTurn(ev) {
+    const idx = ev.index || '?';
+    const wrap = el('div', 'turn-divider');
+    wrap.dataset.turnIdx = idx;
+    wrap.appendChild(el('span', 'turn-line'));
+    const label = el('span', 'turn-label');
+    label.appendChild(el('span', 'turn-label-num', `Turn ${idx}`));
+    // 折叠所有工具调用的快捷按钮
+    const collapseBtn = el('button', 'turn-collapse-btn');
+    collapseBtn.type = 'button';
+    collapseBtn.title = '折叠/展开本轮所有工具调用';
+    collapseBtn.textContent = '⊟ 折叠工具';
+    collapseBtn.dataset.collapsed = '0';
+    collapseBtn.onclick = (e) => {
+        e.stopPropagation();
+        toggleTurnTools(wrap, collapseBtn);
+    };
+    label.appendChild(collapseBtn);
+    wrap.appendChild(label);
+    wrap.appendChild(el('span', 'turn-line'));
+    return wrap;
+}
+
+function toggleTurnTools(turnEl, btn) {
+    // 找到从此 turn 到下一个 turn 之间的所有 tool details
+    const tools = [];
+    let cur = turnEl.nextSibling;
+    while (cur && !(cur.classList && cur.classList.contains('turn-divider'))) {
+        if (cur.tagName === 'DETAILS' && (cur.classList.contains('msg-tool-use') || cur.classList.contains('msg-tool-result'))) {
+            tools.push(cur);
+        }
+        cur = cur.nextSibling;
+    }
+    if (tools.length === 0) return;
+    const collapsed = btn.dataset.collapsed === '1';
+    if (collapsed) {
+        tools.forEach(t => { t.open = true; });
+        btn.dataset.collapsed = '0';
+        btn.textContent = '⊟ 折叠工具';
+    } else {
+        tools.forEach(t => { t.open = false; });
+        btn.dataset.collapsed = '1';
+        btn.textContent = '⊞ 展开工具';
+    }
+}
+
+function renderPrompt(ev) {
+    // OS 调度注入的 prompt（Turn 2+ 子 agent 完成后注入父 agent）→ 单独的卡片
+    if (ev.source === 'os') {
+        const card = el('div', 'msg msg-os-resume');
+        const head = el('div', 'msg-role', 'orchestrator → resume');
+        card.appendChild(head);
+        const body = el('div', 'msg-body');
+        body.textContent = ev.text || '';
+        card.appendChild(body);
+        return card;
+    }
+    // 用户 prompt → 右对齐 chat 气泡 + ↶ rewind 按钮（仅 user source 才有）
+    const wrap = el('div', 'msg msg-prompt');
+    const inner = el('div', 'msg-inner');
+    const head = el('div', 'msg-head');
+    head.appendChild(el('span', 'msg-role', 'you'));
+    if (ev.seq != null) {
+        const rewindBtn = document.createElement('button');
+        rewindBtn.className = 'msg-rewind-btn';
+        rewindBtn.title = '从这里回退会话（删除这条及之后的所有内容）';
+        rewindBtn.textContent = '↶';
+        rewindBtn.onclick = (e) => {
+            e.stopPropagation();
+            rewindToSeq(ev.seq, ev.text || '');
+        };
+        head.appendChild(rewindBtn);
+    }
+    inner.appendChild(head);
+    const body = el('div', 'msg-body');
+    body.textContent = stripProtocolWrap(ev.text || '');
+    inner.appendChild(body);
+    wrap.appendChild(inner);
+    return wrap;
+}
+
+async function rewindToSeq(seq, promptText) {
+    if (!currentRunId) return;
+    const preview = (promptText || '').slice(0, 60);
+    if (!confirm(`回退会话到这条消息之前？\n\n「${preview}${promptText.length > 60 ? '...' : ''}」\n\n⚠️ 这条消息及之后的所有对话会被删除\n⚠️ 对应的 git commit 也会被撤销\n\n此操作不可撤销。`)) return;
+    try {
+        const resp = await fetch(`/api/run/${currentRunId}/rewind`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({seq}),
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.error) {
+            alert(`回退失败：${data.error || resp.statusText}`);
+            return;
+        }
+        // 重新拉一次 run 状态并重连 stream（事件流已被截断）
+        viewRun(currentRunId);
+        refreshWorkspace(currentRunId);
+        refreshDag(currentRunId);
+    } catch (e) {
+        alert(`回退失败：${e}`);
+    }
+}
+
+function renderText(ev) {
+    const card = el('div', 'msg msg-text');
+    card.appendChild(el('div', 'msg-role', 'agent'));
+    const body = el('div', 'msg-body markdown-body');
+    setMarkdownBody(body, ev.text || '');
+    card.appendChild(body);
+    return card;
+}
+
+// 工具图标映射 — 不同类别用不同字符
+const TOOL_ICONS = {
+    Bash: '$',
+    Read: '◇',
+    Write: '✎',
+    Edit: '✎',
+    Grep: '⌕',
+    Glob: '⌕',
+    TodoWrite: '☑',
+};
+
+// 简单工具列表（summary 是单行参数，没必要大代码块）
+const INLINE_TOOLS = new Set(['Read', 'Grep', 'Glob']);
+
+function renderToolUse(ev) {
+    const summary = ev.summary || '';
+    const isWrite = ev.tool === 'Write' && ev.content !== undefined;
+    const isEdit = ev.tool === 'Edit' && (ev.old_string !== undefined || ev.new_string !== undefined);
+    const isTodo = ev.tool === 'TodoWrite' && Array.isArray(ev.todos);
+    const isInline = INLINE_TOOLS.has(ev.tool) && summary && !summary.includes('\n');
+    const hasDiff = isWrite || isEdit;
+
+    const longContent = hasDiff || isTodo || (!isInline && (summary.length > 200 || summary.includes('\n')));
+    const card = el('details', 'msg msg-tool-use' + (isInline ? ' is-inline' : (longContent ? '' : ' is-short')));
+    if (!longContent) card.open = true;
+
+    const head = document.createElement('summary');
+    head.className = 'tool-head';
+    const icon = TOOL_ICONS[ev.tool] || '⚙';
+    head.appendChild(el('span', 'tool-icon', icon));
+    head.appendChild(el('span', 'tool-name', ev.tool || 'Tool'));
+
+    // diff 统计 (Edit/Write)
+    if (hasDiff) {
+        const stats = computeDiffStats(ev);
+        if (stats) {
+            const statsEl = el('span', 'tool-stats');
+            if (stats.add) statsEl.appendChild(el('span', 'add', `+${stats.add}`));
+            if (stats.del) statsEl.appendChild(el('span', 'del', `-${stats.del}`));
+            head.appendChild(statsEl);
+        }
+    }
+
+    // inline 摘要：单行参数直接挤在标题里（Read/Grep/Glob/Bash 都很合适）
+    const oneLine = summary.split('\n')[0];
+    const inlineText = isInline
+        ? oneLine
+        : (ev.tool === 'Bash' ? '$ ' + oneLine : oneLine);
+    head.appendChild(el('span', 'tool-inline', inlineText.length > 140 ? inlineText.slice(0, 140) + '…' : inlineText));
+
+    card.appendChild(head);
+
+    if (isEdit) {
+        card.appendChild(renderDiff(ev.old_string || '', ev.new_string || '', ev.file_path || ''));
+    } else if (isWrite) {
+        card.appendChild(renderWriteContent(ev.content || '', ev.file_path || ''));
+    } else if (isTodo) {
+        card.appendChild(renderTodoList(ev.todos));
+    } else if (isInline) {
+        // inline 不渲染额外 body — 一切信息都在 head 里
+    } else {
+        const lang = ev.tool === 'Bash' ? 'bash' : detectLang(ev.tool, summary);
+        const pre = document.createElement('pre');
+        pre.className = 'tool-summary';
+        const code = document.createElement('code');
+        if (lang) code.className = 'language-' + lang;
+        code.textContent = summary;
+        pre.appendChild(code);
+        card.appendChild(pre);
+        if (lang) { try { hljs.highlightElement(code); } catch {} }
+    }
+    return card;
+}
+
+function computeDiffStats(ev) {
+    try {
+        if (ev.tool === 'Write') {
+            const lines = (ev.content || '').split('\n').filter(l => l.length > 0).length;
+            return { add: lines, del: 0 };
+        }
+        if (ev.tool === 'Edit' && window.Diff) {
+            const patch = Diff.createPatch('x', ev.old_string || '', ev.new_string || '', '', '');
+            let add = 0, del = 0;
+            patch.split('\n').slice(4).forEach(line => {
+                if (line.startsWith('+') && !line.startsWith('+++')) add++;
+                else if (line.startsWith('-') && !line.startsWith('---')) del++;
+            });
+            return { add, del };
+        }
+    } catch {}
+    return null;
+}
+
+function renderTodoList(todos) {
+    const wrap = el('div', 'todo-list');
+    if (!todos || todos.length === 0) {
+        wrap.appendChild(el('div', 'todo-empty', '(no todos)'));
+        return wrap;
+    }
+    todos.forEach(todo => {
+        const status = todo.status || 'pending';
+        const row = el('div', 'todo-row todo-' + status);
+        const dot = el('span', 'todo-dot');
+        if (status === 'completed') dot.textContent = '●';
+        else if (status === 'in_progress') dot.textContent = '◐';
+        else dot.textContent = '○';
+        row.appendChild(dot);
+        const text = todo.status === 'in_progress' ? (todo.activeForm || todo.subject || '') : (todo.subject || '');
+        row.appendChild(el('span', 'todo-text', text));
+        wrap.appendChild(row);
+    });
+    return wrap;
+}
+
+function renderDiff(oldStr, newStr, filePath) {
+    const wrap = document.createElement('div');
+    wrap.className = 'diff-view';
+
+    if (!window.Diff) {
+        // jsdiff 未加载，退回纯文本
+        const pre = el('pre', 'tool-summary');
+        pre.textContent = `--- ${filePath}\n-${oldStr}\n+${newStr}`;
+        wrap.appendChild(pre);
+        return wrap;
+    }
+
+    const patch = Diff.createPatch(filePath || 'file', oldStr, newStr, '', '', { context: 3 });
+    const lines = patch.split('\n').slice(4); // 跳过 patch 头两行文件名行
+    const pre = document.createElement('pre');
+    pre.className = 'diff-block';
+
+    lines.forEach(line => {
+        const span = document.createElement('span');
+        span.className = 'diff-line';
+        if (line.startsWith('+')) {
+            span.classList.add('diff-add');
+        } else if (line.startsWith('-')) {
+            span.classList.add('diff-del');
+        } else if (line.startsWith('@@')) {
+            span.classList.add('diff-hunk');
+        }
+        span.textContent = line + '\n';
+        pre.appendChild(span);
+    });
+
+    wrap.appendChild(pre);
+    return wrap;
+}
+
+function renderWriteContent(content, filePath) {
+    const wrap = document.createElement('div');
+    wrap.className = 'diff-view';
+    const pre = document.createElement('pre');
+    pre.className = 'diff-block';
+
+    const lines = content.split('\n');
+    lines.forEach((line, i) => {
+        const span = document.createElement('span');
+        span.className = 'diff-line diff-add';
+        span.textContent = '+' + line + (i < lines.length - 1 ? '\n' : '');
+        pre.appendChild(span);
+    });
+
+    wrap.appendChild(pre);
+    return wrap;
+}
+
+function renderToolResult(ev) {
+    const text = ev.text || '';
+    const lines = text.split('\n');
+    const lineCount = lines.length;
+    const charCount = text.length;
+    const card = el('details', 'msg msg-tool-result');
+    // tool_result 折叠规则：>3 行 或 >200 字 折叠
+    const short = lineCount <= 3 && charCount < 200;
+    if (short) card.open = true;
+    const head = document.createElement('summary');
+    head.className = 'tool-head';
+    head.appendChild(el('span', 'tool-icon', '↳'));
+    head.appendChild(el('span', 'tool-name', 'result'));
+    // 展示行数 / 字符数 / truncated
+    const metaParts = [];
+    if (lineCount > 1) metaParts.push(`${lineCount} 行`);
+    if (charCount > 200) metaParts.push(`${charCount} 字`);
+    if (ev.truncated) metaParts.push('(truncated)');
+    if (metaParts.length > 0) {
+        head.appendChild(el('span', 'tool-stats result-stats', metaParts.join(' · ')));
+    }
+    const oneLine = lines[0] || '';
+    head.appendChild(el('span', 'tool-inline', oneLine.length > 140 ? oneLine.slice(0, 140) + '…' : oneLine));
+    card.appendChild(head);
+    const pre = el('pre', 'tool-output');
+    pre.textContent = text;
+    card.appendChild(pre);
+    return card;
+}
+
+function renderSend(ev) {
+    const card = el('div', 'msg msg-send');
+    card.appendChild(el('div', 'msg-role', 'progress'));
+    const body = el('div', 'msg-body');
+    body.textContent = ev.text || '';
+    card.appendChild(body);
+    return card;
+}
+
+function renderReport(ev) {
+    const card = el('div', 'msg msg-report');
+    card.appendChild(el('div', 'msg-role', 'final result'));
+    const body = el('div', 'msg-body markdown-body');
+    setMarkdownBody(body, ev.text || '');
+    card.appendChild(body);
+    return card;
+}
+
+function renderUserDone(ev) {
+    // 用户在 Dashboard 点 Done — 只是信号，没有具体 result 内容
+    const card = el('div', 'msg msg-user-done');
+    const body = el('div', 'msg-body');
+    body.textContent = 'Ended by user (Done)';
+    card.appendChild(body);
+    return card;
+}
+
+function renderError(ev) {
+    const card = el('div', 'msg msg-error');
+    card.appendChild(el('div', 'msg-role', 'error'));
+    const body = el('div', 'msg-body');
+    body.textContent = ev.text || '';
+    card.appendChild(body);
+    return card;
+}
+
+function renderSystem(ev) {
+    const card = el('div', 'msg msg-system');
+    const body = el('div', 'msg-body');
+    body.textContent = ev.text || '';
+    card.appendChild(body);
+    return card;
+}
+
+function renderRaw(ev) {
+    const pre = el('pre', 'msg msg-raw');
+    pre.textContent = ev.text || '';
+    return pre;
+}
+
+function stripProtocolWrap(text) {
+    // 移除 OS 注入到子 agent 的协议头/尾包装，只保留 [Your Task] 中的内容
+    const m = text.match(/\[Your Task\]\n?([\s\S]*?)\n?\[\/Your Task\]/);
+    if (m) return m[1].trim();
+    return text;
+}
+
+function setStatus(type, text) {
+    document.getElementById('statusIndicator').className = 'status-indicator ' + type;
+    document.getElementById('statusText').textContent = text;
+}
+
+async function updateSessionInfo() {
+    if (!currentRunId) return;
+    const resp = await fetch(`/api/run/${currentRunId}`);
+    const data = await resp.json();
+    const info = document.getElementById('sessionInfo');
+    const meta = document.getElementById('convMeta');
+    const parts = [];
+    if (data.session_id) parts.push(`session ${data.session_id.slice(0,8)}`);
+    if (data.turns > 1) parts.push(`${data.turns} turns`);
+    if (data.children_run_ids && data.children_run_ids.length > 0) parts.push(`${data.children_run_ids.length} children`);
+    info.textContent = parts.join(' · ');
+    meta.textContent = parts.join(' · ');
+}
+
+async function refreshTree(workspaceId) {
+    let url = '/api/tree';
+    if (workspaceId) {
+        url += `?workspace_id=${encodeURIComponent(workspaceId)}`;
+    }
+    const resp = await fetch(url);
+    const data = await resp.json();
+    const roots = data.tree || [];
+    const container = document.getElementById('treeContainer');
+    container.innerHTML = renderWorkspaceGroups(roots);
+}
+
+function _wsNameOf(node) {
+    const wp = node.workspace_path || '';
+    if (!wp) return '__no_ws__';
+    const parts = wp.split(/[/\\]/).filter(Boolean);
+    return parts[parts.length - 1] || '__no_ws__';
+}
+
+function _countTreeNodes(n) {
+    return 1 + (n.children || []).reduce((s, c) => s + _countTreeNodes(c), 0);
+}
+
+// 统计某节点下（不含自身）的子任务运行情况
+function _summarizeChildren(node) {
+    const all = [];
+    (function walk(n) {
+        for (const c of (n.children || [])) {
+            all.push(c);
+            walk(c);
+        }
+    })(node);
+    if (all.length === 0) return null;
+    const total = all.length;
+    const running = all.filter(c => c.status === 'running' || c.status === 'waiting').length;
+    const done = all.filter(c => c.status === 'completed').length;
+    const failed = all.filter(c => c.status === 'failed' || c.status === 'stopped').length;
+    return { total, running, done, failed };
+}
+
+function renderWorkspaceGroups(roots) {
+    if (!roots || roots.length === 0) return '<div class="tree-empty">No agents yet</div>';
+    // 按 workspace 分组（保持插入顺序：以首次出现该 ws 的 root 为序）
+    const groups = new Map();
+    for (const r of roots) {
+        const ws = _wsNameOf(r);
+        if (!groups.has(ws)) groups.set(ws, []);
+        groups.get(ws).push(r);
+    }
+    let html = '';
+    for (const [wsName, rs] of groups) {
+        const total = rs.reduce((n, r) => n + _countTreeNodes(r), 0);
+        const isReal = wsName !== '__no_ws__';
+        // 取第一个 root 的 run_id，用于点击 workspace 组时查看 DAG
+        const firstRunId = rs[0] ? rs[0].run_id : '';
+        const label = isReal ? `📁 ${escapeHtml(wsName)}` : '(无 workspace)';
+        const cls = 'ws-group-header';
+        const delBtn = isReal
+            ? `<button class="ws-group-del" title="删除整个 workspace（含所有 run + 磁盘文件）" onclick="event.stopPropagation(); deleteWorkspace('${wsName}')">🗑</button>`
+            : '';
+        const clickHandler = isReal && firstRunId
+            ? `onclick="viewRun('${firstRunId}')" style="cursor:pointer"`
+            : '';
+        html += `<div class="ws-group">
+            <div class="${cls}" ${clickHandler} title="点击查看 DAG 编排状态">
+                <span>${label}</span>
+                <span class="ws-group-meta">${total} runs</span>
+                ${delBtn}
+            </div>
+            ${renderTree(rs, 0)}
+        </div>`;
+    }
+    return html;
+}
+
+async function deleteWorkspace(wsName) {
+    if (!confirm(`确定删除整个 workspace "${wsName.slice(0,8)}"？\n\n所有相关 run、子树和磁盘文件都会被删除（不可恢复）。`)) return;
+    try {
+        const resp = await fetch('/api/workspace/delete', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({workspace: wsName}),
+        });
+        const data = await resp.json();
+        if (data.error) {
+            showToast(`删除失败: ${data.error}`, 'error');
+            return;
+        }
+        showToast(`已删除 workspace ${wsName.slice(0,8)}（${data.deleted_runs} runs · ${data.purged_dirs} 目录）`, 'success');
+        // 当前看的 run 可能被删了，回到空白
+        if (currentRunId) {
+            // 查 run 是否还在
+            const r = await fetch('/api/runs').then(r => r.json()).catch(() => ({runs: []}));
+            const stillThere = (r.runs || []).some(x => x.run_id === currentRunId);
+            if (!stillThere) newChat();
+        }
+        refreshTree();
+    } catch (e) {
+        showToast(`删除失败: ${e}`, 'error');
+    }
+}
+
+// 折叠状态：node.run_id → bool（true = 折叠子节点）
+const collapsedNodes = new Set();
+
+function toggleCollapse(runId, ev) {
+    if (ev) ev.stopPropagation();
+    if (collapsedNodes.has(runId)) collapsedNodes.delete(runId);
+    else collapsedNodes.add(runId);
+    refreshTree();
+}
+
+function renderTree(nodes, depth) {
+    if (!nodes || nodes.length === 0) return '<div class="tree-empty">No agents yet</div>';
+    return nodes.map(node => {
+        const isActive = node.run_id === currentRunId;
+        const hasChildren = node.children && node.children.length > 0;
+        const isCollapsed = collapsedNodes.has(node.run_id);
+        const statusIcon = {
+            running: '<span class="ti running"></span>',
+            completed: '<span class="ti completed"></span>',
+            failed: '<span class="ti failed"></span>',
+            stopped: '<span class="ti stopped"></span>',
+            waiting: '<span class="ti waiting"></span>',
+        }[node.status] || '<span class="ti"></span>';
+
+        // 优先用用户自定义 label，否则直接用后端已提取的 prompt
+        const showPrompt = node.label || node.prompt || node.run_id.slice(0, 8);
+
+        const modelBadge = node.model ? `<span class="tree-badge tree-badge-model">${escapeHtml(node.model)}</span>` : '';
+        const typeBadge = (node.task_type === 'interactive')
+            ? '<span class="tree-badge tree-badge-interactive">interactive</span>'
+            : (node.is_root ? '' : '<span class="tree-badge tree-badge-gen">gen</span>');
+
+        const canDone = node.status === 'running' && !node.is_root;
+        const doneLabel = node.task_type === 'interactive' ? 'Done' : 'Force end';
+        const canStop = node.status === 'running' && node.is_root;
+
+        const collapseBtn = hasChildren
+            ? `<button class="tree-toggle" onclick="toggleCollapse('${node.run_id}', event)" title="${isCollapsed ? 'Expand' : 'Collapse'}">${isCollapsed ? '▸' : '▾'}</button>`
+            : '<span class="tree-toggle-spacer"></span>';
+
+        let html = `<div class="tree-node depth-${depth} ${isActive ? 'active' : ''} ${node.status}" data-run-id="${node.run_id}" onclick="viewRun('${node.run_id}')">`;
+        html += `<div class="tree-node-row">`;
+        html += collapseBtn;
+        html += statusIcon;
+        html += `<span class="tree-node-prompt">${escapeHtml(showPrompt)}</span>`;
+        // 子任务进度（如果有 children）
+        const childSummary = _summarizeChildren(node);
+        if (childSummary) {
+            const cls = childSummary.failed > 0
+                ? 'tree-children-stat has-failed'
+                : (childSummary.running > 0 ? 'tree-children-stat is-running' : 'tree-children-stat all-done');
+            const txt = `${childSummary.done}/${childSummary.total}`;
+            const titleParts = [`总 ${childSummary.total}`, `已完成 ${childSummary.done}`];
+            if (childSummary.running > 0) titleParts.push(`运行中 ${childSummary.running}`);
+            if (childSummary.failed > 0) titleParts.push(`失败 ${childSummary.failed}`);
+            html += `<span class="${cls}" title="${titleParts.join(' · ')}">${txt}</span>`;
+        }
+        // hover 操作按钮组
+        html += `<span class="tree-actions">`;
+        html += `<button class="tree-btn-icon tree-btn-rename" title="重命名" onclick="event.stopPropagation();renameRun('${node.run_id}')">✎</button>`;
+        if (canDone) {
+            html += `<button class="tree-btn-done" onclick="event.stopPropagation();completeAgent('${node.run_id}', '${escapeHtml(doneLabel)}', '${node.task_type || 'generative'}')">${escapeHtml(doneLabel)}</button>`;
+        }
+        if (canStop) {
+            html += `<button class="tree-btn-icon tree-btn-stop" title="Stop" onclick="event.stopPropagation();stopRun('${node.run_id}')">■</button>`;
+        }
+        html += `<button class="tree-btn-icon tree-btn-del" title="Delete" onclick="event.stopPropagation();deleteRun('${node.run_id}')">✕</button>`;
+        html += `</span>`;
+        html += `</div>`;
+        if (modelBadge || typeBadge) {
+            html += `<div class="tree-node-badges">${typeBadge}${modelBadge}</div>`;
+        }
+        // WAITING 节点的进度条（直观展示子任务完成度）
+        if (childSummary && (node.status === 'waiting' || (childSummary.running > 0 && hasChildren))) {
+            const pct = Math.round(((childSummary.done + childSummary.failed) / childSummary.total) * 100);
+            html += `<div class="tree-progress" title="${childSummary.done}/${childSummary.total} 已结束"><span class="tree-progress-bar" style="width:${pct}%"></span></div>`;
+        }
+        html += `</div>`;
+
+        if (hasChildren && !isCollapsed) {
+            html += `<div class="tree-children">${renderTree(node.children, depth + 1)}</div>`;
+        }
+        return html;
+    }).join('');
+}
+
+async function stopRun(runId) {
+    await fetch(`/api/run/${runId}/stop`, {method: 'POST'});
+    refreshTree();
+}
+
+async function deleteRun(runId) {
+    const isCurrent = runId === currentRunId;
+    if (!confirm('Delete this agent (and all descendants)?')) return;
+    const resp = await fetch(`/api/run/${runId}`, {method: 'DELETE'});
+    if (!resp.ok) { alert('Delete failed'); return; }
+    if (isCurrent) newChat();
+    refreshTree();
+}
+
+async function clearCompleted() {
+    if (!currentRunId) {
+        // 没有选中 run，走原来的"清除所有已完成"逻辑
+        if (!confirm('Clear all completed/failed/stopped runs?')) return;
+        const resp = await fetch('/api/runs/clear', {method: 'POST'});
+        const data = await resp.json();
+        refreshTree();
+        return;
+    }
+    // 有选中 run，清除当前 run 的上下文（类似 Claude Code /clear）
+    if (!confirm(`Clear context for run ${currentRunId.slice(0,8)}? This will erase conversation history but keep the run.`)) return;
+    const resp = await fetch(`/api/run/${currentRunId}/clear`, {method: 'POST'});
+    const data = await resp.json();
+    if (data.ok) {
+        // 重新加载该 run 的事件流
+        loadRunDetail(currentRunId);
+    } else {
+        alert(data.error || 'Clear failed');
+    }
+}
+
+function exportRun(fmt) {
+    if (!currentRunId) { alert('No run selected'); return; }
+    window.open(`/api/run/${currentRunId}/export?format=${fmt}`, '_blank');
+}
+
+async function completeAgent(runId, label, taskType) {
+    const msg = taskType === 'interactive'
+        ? 'Mark this interactive agent as completed? Parent will resume.'
+        : 'Force end this agent? The child process will be terminated and the parent will resume.';
+    if (!confirm(msg)) return;
+    const resp = await fetch(`/api/run/${runId}/complete`, {method: 'POST'});
+    const data = await resp.json();
+    if (data.ok) { refreshTree(); }
+    else { alert(data.error || 'Failed'); }
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// === Workspace ===
+let workspaceCollapsed = false;
+
+function toggleWorkspace() {
+    workspaceCollapsed = !workspaceCollapsed;
+    document.getElementById('workspaceBody').style.display = workspaceCollapsed ? 'none' : '';
+    document.getElementById('workspaceToggle').textContent = workspaceCollapsed ? '▸' : '▾';
+}
+
+async function refreshWorkspace(runId) {
+    if (!runId) {
+        document.getElementById('workspacePanel').style.display = 'none';
+        return;
+    }
+    const resp = await fetch(`/api/run/${runId}/workspace`);
+    const data = await resp.json();
+    const files = data.files || [];
+    const branches = data.branches || [];
+    const currentBranch = data.current_branch || '';
+    const taskName = data.task_name || '';
+
+    // 仅当当前分支不属于该任务的任何分支时，才自动切换到基准分支
+    // （避免覆盖用户手动切换到衍生分支的操作）
+    const branchNames = branches.map(b => b.name);
+    const isOnTaskBranch = branchNames.includes(currentBranch);
+    if (!isOnTaskBranch && branchNames.length > 0) {
+        const baseBranch = branches.find(b => b.is_base) || branches[0];
+        try {
+            const swResp = await fetch(`/api/run/${runId}/workspace/branch`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({branch: baseBranch.name}),
+            });
+            const swResult = await swResp.json();
+            if (swResult.ok) {
+                const resp2 = await fetch(`/api/run/${runId}/workspace`);
+                const data2 = await resp2.json();
+                renderWorkspaceData(runId, data2);
+                refreshDag(runId);
+                return;
+            }
+        } catch (e) {
+            // 切换失败，继续用当前数据渲染
+        }
+    }
+    renderWorkspaceData(runId, data);
+}
+
+function renderWorkspaceData(runId, data) {
+    const files = data.files || [];
+    const branches = data.branches || [];
+    const currentBranch = data.current_branch || '';
+    const taskName = data.task_name || '';
+
+    const panel = document.getElementById('workspacePanel');
+    const countEl = document.getElementById('workspaceCount');
+    countEl.textContent = files.length ? `${files.length} file${files.length > 1 ? 's' : ''}` : '';
+    
+    // 显示当前分支
+    const branchEl = document.getElementById('workspaceBranch');
+    if (currentBranch) {
+        // 查找当前分支的 display 名称
+        const curBranchObj = branches.find(b => (b.name || b) === currentBranch);
+        const display = (curBranchObj && curBranchObj.display) ? curBranchObj.display : currentBranch;
+        branchEl.innerHTML = `🌿 <span class="current-branch">${escapeHtml(display)}</span>`;
+    } else {
+        branchEl.textContent = '';
+    }
+    // 存储 task_name 到 dataset，供 refreshDag 使用
+    branchEl.dataset.taskName = taskName || '';
+    
+    // 渲染分支列表（树形结构）
+    const branchSection = document.getElementById('branchSection');
+    const branchList = document.getElementById('branchList');
+    if (branches.length > 0) {
+        branchSection.style.display = '';
+        // 分类：基准分支 vs 衍生分支
+        const baseBranch = branches.find(b => b.is_base);
+        const derivedBranches = branches
+            .filter(b => !b.is_base)
+            .sort((a, b) => {
+                const na = parseInt((a.name.match(/-r(\d+)$/) || [])[1] || '0');
+                const nb = parseInt((b.name.match(/-r(\d+)$/) || [])[1] || '0');
+                return na - nb;
+            });
+
+        let html = '';
+        // 基准分支
+        if (baseBranch) {
+            html += renderBranchItem(baseBranch, baseBranch.name === currentBranch, runId, 0, true);
+        }
+        // 衍生分支
+        const lastIdx = derivedBranches.length - 1;
+        derivedBranches.forEach((b, idx) => {
+            html += renderBranchItem(b, b.name === currentBranch, runId, 1, idx === lastIdx);
+        });
+        branchList.innerHTML = html;
+    } else {
+        branchSection.style.display = 'none';
+    }
+    
+    panel.style.display = '';
+
+    const container = document.getElementById('workspaceFiles');
+    if (files.length === 0) {
+        container.innerHTML = '<div class="workspace-empty">No files yet</div>';
+    } else {
+    container.innerHTML = files.map(f => {
+        const size = f.size < 1024 ? `${f.size}B` : `${(f.size/1024).toFixed(1)}K`;
+        const mtime = new Date(f.mtime * 1000).toLocaleTimeString();
+        return `<div class="workspace-file" onclick="previewFile('${escapeHtml(runId)}', '${escapeHtml(f.path)}')">
+            <span class="wf-icon">${fileIcon(f.path)}</span>
+            <span class="wf-name">${escapeHtml(f.path)}</span>
+            <span class="wf-meta">${size} · ${mtime}</span>
+        </div>`;
+    }).join('');
+    }
+}
+
+async function switchBranch(runId, branch) {
+    if (!confirm(`切换到分支 \"${branch}\"？工作区文件将被替换。`)) return;
+    try {
+        const resp = await fetch(`/api/run/${runId}/workspace/branch`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({branch: branch}),
+        });
+        const result = await resp.json();
+        if (result.ok) {
+            showToast(`已切换到: ${branch}`, 'success');
+            await refreshWorkspace(runId);
+            await refreshDag(runId);
+            const wsId = document.getElementById('workspaceBranch')?.dataset?.taskName || '';
+            refreshTree(wsId);
+        } else {
+            showToast(`切换失败: ${result.error}`, 'error');
+            refreshWorkspace(runId);
+        }
+    } catch (e) {
+        showToast(`切换失败: ${e.message}`, 'error');
+        refreshWorkspace(runId);
+    }
+}
+
+function renderBranchItem(branch, isCurrent, runId, depth, isBase, isLast) {
+    const name = branch.name;
+    const display = branch.display || '';
+    const icon = isCurrent ? '●' : '○';
+    const cls = isCurrent ? 'branch-item current' : 'branch-item';
+    const label = display || name;
+
+    // 树形缩进前缀
+    let prefix = '';
+    if (depth > 0) {
+        prefix = isLast ? '└─ ' : '├─ ';
+    }
+
+    const sub = display ? `<span class="branch-id">${escapeHtml(name)}</span>` : '';
+    const tag = isCurrent ? '<span class="branch-tag">当前</span>' : '';
+    // 衍生分支显示删除按钮（hover 可见）
+    const delBtn = (!isBase && depth > 0)
+        ? `<button class="branch-del-btn" title="删除此分支" onclick="event.stopPropagation(); deleteBranch('${escapeHtml(name)}', '${escapeHtml(runId)}')">×</button>`
+        : '';
+
+    return `<div class="${cls}" onclick="switchBranch('${escapeHtml(runId)}', '${escapeHtml(name)}')" style="padding-left: ${8 + depth * 18}px">
+        <span class="branch-icon">${icon}</span>
+        <span class="branch-tree-prefix">${prefix}</span>
+        <span class="branch-label">${escapeHtml(label)}</span>
+        ${sub}
+        ${tag}
+        ${delBtn}
+    </div>`;
+}
+
+async function deleteBranch(branchName, runId) {
+    if (!confirm(`确定删除分支 "${branchName}"？此操作不可恢复。`)) return;
+    try {
+        const resp = await fetch(`/api/branch/${encodeURIComponent(branchName)}`, {
+            method: 'DELETE',
+        });
+        const result = await resp.json();
+        if (result.ok) {
+            showToast(`已删除分支: ${branchName}`, 'success');
+            refreshWorkspace(runId);
+        } else {
+            showToast(`删除失败: ${result.error}`, 'error');
+        }
+    } catch (e) {
+        showToast(`删除失败: ${e.message}`, 'error');
+    }
+}
+
+function showCreateBranch() {
+    document.getElementById('branchCreate').style.display = '';
+    document.getElementById('newBranchName').focus();
+}
+
+function hideCreateBranch() {
+    document.getElementById('branchCreate').style.display = 'none';
+    document.getElementById('newBranchName').value = '';
+}
+
+async function createBranch() {
+    const nameInput = document.getElementById('newBranchName');
+    const name = nameInput.value.trim();
+    if (!name) return;
+    // 创建分支：在当前 run 的 workspace 中执行 git branch + checkout
+    const runId = currentRunId;
+    if (!runId) return;
+    try {
+        // 通过分支切换 API，先创建分支（在 git 中已存在则切换，否则需要服务端支持创建）
+        // 当前 API 只支持切换已存在的分支，需要服务端扩展
+        const resp = await fetch(`/api/run/${runId}/workspace/branch/create`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({branch: name}),
+        });
+        const result = await resp.json();
+        if (result.ok) {
+            showToast(`已创建并切换到: ${name}`, 'success');
+            hideCreateBranch();
+            refreshWorkspace(runId);
+        } else {
+            showToast(`创建失败: ${result.error}`, 'error');
+        }
+    } catch (e) {
+        showToast(`创建失败: ${e.message}`, 'error');
+    }
+}
+
+// ============================================================
+// DAG 可视化图
+// ============================================================
+let dagData = null;  // 缓存 DAG 数据
+
+async function refreshDag(runId) {
+    console.log('[refreshDag] called with runId=', runId);
+    const panel = document.getElementById('dagPanel');
+    if (!runId) { console.log('[refreshDag] no runId, hiding'); panel.style.display = 'none'; return; }
+    let data;
+    try {
+        const taskName = document.getElementById('workspaceBranch')?.dataset?.taskName || '';
+        const url = taskName
+            ? `/api/run/${runId}/dag?workspace_id=${encodeURIComponent(taskName)}`
+            : `/api/run/${runId}/dag`;
+        console.log('[refreshDag] fetching', url);
+        const resp = await fetch(url);
+        data = await resp.json();
+        console.log('[refreshDag] response', JSON.stringify({ok: data.ok, stepCount: data.steps?.length}));
+    } catch(e) { console.log('[refreshDag] fetch error', e); panel.style.display = 'none'; return; }
+    if (!data.ok) { console.log('[refreshDag] !ok, hiding'); panel.style.display = 'none'; return; }
+
+    const steps = data.steps || [];
+    const commits = data.step_commits || [];
+    if (steps.length === 0) { panel.style.display = 'none'; return; }
+
+    // 合并 step 状态和 commit 信息
+    dagData = (data.steps || []).map(s => ({
+        id: s.id,
+        name: s.name || s.id,
+        status: s.status,
+        depends_on: s.depends_on || [],
+        prompt: s.prompt || '',
+        summary: s.summary || '',
+        files: s.files || [],
+        sha: s.sha,
+        date: s.date,
+    }));
+
+    panel.style.display = '';
+    document.getElementById('dagCount').textContent = `${dagData.length} 节点`;
+    renderDagGraph();
+}
+
+function renderDagGraph() {
+    if (!dagData || dagData.length === 0) return;
+
+    const svg = document.getElementById('dagSvg');
+    const container = document.getElementById('dagGraph');
+    const W = Math.max(container.clientWidth, 800);
+    // 动态高度：每个节点更高以容纳更多信息
+    const nodeW = 180, nodeH = 80;
+    const marginX = 60, marginY = 30;
+    const rowGap = 100;
+
+    const levels = topoLevels(dagData);
+    const maxNodesInLevel = Math.max(...levels.map(l => l.length), 1);
+    const totalW = maxNodesInLevel * (nodeW + 40) - 40;
+    const actualW = Math.max(W, marginX * 2 + totalW);
+    const H = Math.max(220, levels.length * (nodeH + rowGap) + marginY);
+
+    svg.setAttribute('viewBox', `0 0 ${actualW} ${H}`);
+    svg.style.minHeight = H + 'px';
+    svg.style.width = '100%';
+
+    // 计算节点位置（居中）
+    const positions = {};
+    levels.forEach((ids, li) => {
+        const rowW = ids.length * (nodeW + 40) - 40;
+        const x0 = marginX + (actualW - marginX * 2 - rowW) / 2;
+        const y0 = marginY + li * (nodeH + rowGap);
+        ids.forEach((id, ni) => {
+            positions[id] = { x: x0 + ni * (nodeW + 40), y: y0, w: nodeW, h: nodeH };
+        });
+    });
+
+    const statusColors = {
+        done: '#4ade80',
+        running: '#fbbf24',
+        pending: '#9ca3af',
+        failed: '#f87171',
+    };
+
+    let svgHtml = '';
+
+    // 连线
+    dagData.forEach(node => {
+        if (!positions[node.id]) return;
+        const to = positions[node.id];
+        (node.depends_on || []).forEach(depId => {
+            if (!positions[depId]) return;
+            const from = positions[depId];
+            const x1 = from.x + from.w;
+            const y1 = from.y + from.h / 2;
+            const x2 = to.x;
+            const y2 = to.y + to.h / 2;
+            const mx = (x1 + x2) / 2;
+            const color = statusColors[node.status] || '#9ca3af';
+            svgHtml += `<path d="M${x1} ${y1} C${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}"
+                stroke="${color}" stroke-width="2" fill="none" opacity="0.4"
+                marker-end="url(#a-${node.id}-${depId})"/>`;
+            svgHtml += `<defs><marker id="a-${node.id}-${depId}" markerWidth="8" markerHeight="6"
+                refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="${color}" opacity="0.4"/></marker></defs>`;
+        });
+    });
+
+    // 节点
+    dagData.forEach(node => {
+        const p = positions[node.id];
+        if (!p) return;
+        const color = statusColors[node.status] || '#9ca3af';
+        const anim = node.status === 'running' ? ' class="dag-node-pulse"' : '';
+        const clickable = node.sha ? ' style="cursor:pointer"' : '';
+
+        // 文件列表
+        const fileText = node.files.length > 0
+            ? node.files.slice(0, 3).map(f => f.split('/').pop()).join(', ')
+            : '';
+        // 摘要（截断）
+        const summary = node.summary || node.prompt || '';
+        const shortSummary = summary.length > 40 ? summary.slice(0, 40) + '...' : summary;
+
+        const tooltip = [
+            node.name,
+            `状态: ${node.status}`,
+            node.sha ? `commit: ${node.sha.slice(0,8)}` : '',
+            summary ? `产出: ${summary}` : '',
+            fileText ? `文件: ${fileText}` : '',
+            node.sha ? '点击回退到此节点' : '',
+        ].filter(Boolean).join('\n');
+
+        svgHtml += `<g class="dag-node" data-id="${escapeHtml(node.id)}"
+            onclick="dagNodeClick('${escapeHtml(node.id)}')"${clickable}>
+            <rect x="${p.x}" y="${p.y}" width="${p.w}" height="${p.h}" rx="8"
+                fill="var(--bg-elev-2)" stroke="${color}" stroke-width="2"${anim}/>
+            <text x="${p.x + p.w/2}" y="${p.y + 20}" text-anchor="middle"
+                fill="var(--text)" font-size="13" font-weight="600">${escapeHtml(node.name)}</text>
+            <text x="${p.x + p.w/2}" y="${p.y + 38}" text-anchor="middle"
+                fill="${color}" font-size="10">${node.status}</text>
+            <text x="${p.x + p.w/2}" y="${p.y + 54}" text-anchor="middle"
+                fill="var(--text-4)" font-size="9">${escapeHtml(shortSummary)}</text>
+            ${fileText ? `<text x="${p.x + p.w/2}" y="${p.y + 68}" text-anchor="middle"
+                fill="var(--accent)" font-size="9">📄 ${escapeHtml(fileText)}</text>` : ''}
+            <title>${tooltip}</title>
+        </g>`;
+    });
+
+    svg.innerHTML = svgHtml;
+}
+
+function dagNodeClick(stepId) {
+    if (!currentRunId) return;
+    const node = dagData.find(s => s.id === stepId);
+    if (!node || !node.sha) {
+        showToast(`节点 ${stepId} 尚未完成，无法回退`);
+        return;
+    }
+    // 找出受影响的节点
+    const affected = getAffectedSteps(stepId);
+    const affectedNames = affected.map(s => s.name || s.id).join(' → ');
+    if (!confirm(
+        `回退 Agent 到 "${stepId}" (${node.name})？\n\n` +
+        `⚠️ git reset --hard 到 ${node.sha.slice(0,8)}\n` +
+        `⚠️ 该节点及之后的所有 commit 将被丢弃\n` +
+        `⚠️ 受影响的 DAG 节点: ${affectedNames}\n\n` +
+        `此操作不可撤销。`
+    )) return;
+    checkoutStep(currentRunId, stepId);
+}
+
+// 获取该 step 及所有下游节点
+function getAffectedSteps(stepId) {
+    if (!dagData) return [];
+    const result = [];
+    const queue = [stepId];
+    const visited = new Set();
+    while (queue.length > 0) {
+        const id = queue.shift();
+        if (visited.has(id)) continue;
+        visited.add(id);
+        const node = dagData.find(s => s.id === id);
+        if (node) result.push(node);
+        dagData.forEach(s => {
+            if ((s.depends_on || []).includes(id) && !visited.has(s.id)) {
+                queue.push(s.id);
+            }
+        });
+    }
+    return result;
+}
+
+// 拓扑分层
+function topoLevels(steps) {
+    const inDegree = {};
+    const deps = {};
+    steps.forEach(s => { inDegree[s.id] = (s.depends_on || []).length; deps[s.id] = s.depends_on || []; });
+    const levels = [];
+    const queue = Object.keys(inDegree).filter(id => inDegree[id] === 0);
+    const idSet = new Set(steps.map(s => s.id));
+    while (queue.length > 0) {
+        levels.push([...queue]);
+        const next = [];
+        queue.forEach(id => {
+            steps.forEach(s => {
+                if ((s.depends_on || []).includes(id)) {
+                    inDegree[s.id]--;
+                    if (inDegree[s.id] === 0) next.push(s.id);
+                }
+            });
+        });
+        queue.length = 0;
+        queue.push(...next);
+    }
+    return levels;
+}
+
+function toggleDag() {
+    const body = document.getElementById('dagBody');
+    const toggle = document.getElementById('dagToggle');
+    const collapsed = body.style.display === 'none';
+    body.style.display = collapsed ? '' : 'none';
+    toggle.textContent = collapsed ? '▾' : '▸';
+}
+
+async function checkoutStep(runId, stepId) {
+    if (!confirm(`确定回退到 step "${stepId}"？\n将从该 commit 创建新分支，原分支保持不变。`)) return;
+    try {
+        const resp = await fetch(`/api/run/${runId}/dag/checkout`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({step_id: stepId, rerun_downstream: true})
+        });
+        const data = await resp.json();
+        if (data.error) { showToast(`回退失败: ${data.error}`, 'error'); return; }
+        const branchInfo = data.branch ? `（新分支: ${data.branch}）` : '';
+        showToast(`已回退到 step ${stepId}${branchInfo}`, 'success');
+        await refreshWorkspace(runId);
+        await refreshDag(runId);
+        const wsId = document.getElementById('workspaceBranch')?.dataset?.taskName || '';
+        refreshTree(wsId);
+    } catch (e) {
+        showToast(`回退失败: ${e}`, 'error');
+    }
+}
+
+function fileIcon(path) {
+    const ext = path.split('.').pop().toLowerCase();
+    const map = { md: '📝', txt: '📄', json: '{}', py: '🐍', js: '🟨', ts: '🔷', sh: '⚙', csv: '📊', html: '🌐', yaml: '⚙', yml: '⚙' };
+    return map[ext] || '📄';
+}
+
+async function previewFile(runId, path) {
+    const resp = await fetch(`/api/run/${runId}/workspace/file?path=${encodeURIComponent(path)}`);
+    const data = await resp.json();
+    if (data.error) { alert(data.error); return; }
+
+    document.getElementById('previewPath').textContent = path;
+    const content = document.getElementById('previewContent');
+    if (data.type === 'binary') {
+        content.textContent = '[Binary file — cannot preview]';
+    } else {
+        content.textContent = data.content;
+    }
+    document.getElementById('workspacePreview').style.display = '';
+}
+
+function closePreview() {
+    document.getElementById('workspacePreview').style.display = 'none';
+}
+
+let _treeRefreshPaused = false;
+setInterval(() => { if (!_treeRefreshPaused) refreshTree(); }, 3000);
+
+// ============================================================
+// Run Label (rename)
+// ============================================================
+const _runLabels = {};  // run_id -> label，本地缓存
+
+function renameRun(runId) {
+    const nodeEl = document.querySelector(`.tree-node[data-run-id="${runId}"]`);
+    const promptEl = nodeEl ? nodeEl.querySelector('.tree-node-prompt') : null;
+    if (!promptEl) return;
+    const current = promptEl.textContent;
+
+    // 用内联 input 替换文本
+    _treeRefreshPaused = true;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'tree-rename-input';
+    input.value = current;
+    promptEl.replaceWith(input);
+    input.focus();
+    input.select();
+
+    const commit = () => {
+        _treeRefreshPaused = false;
+        const newLabel = input.value.trim();
+        const span = document.createElement('span');
+        span.className = 'tree-node-prompt';
+        span.textContent = newLabel || current;
+        input.replaceWith(span);
+        if (newLabel === current) return;
+        fetch(`/api/run/${runId}/label`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ label: newLabel }),
+        }).then(() => refreshTree());
+    };
+
+    const cancel = () => {
+        _treeRefreshPaused = false;
+        const span = document.createElement('span');
+        span.className = 'tree-node-prompt';
+        span.textContent = current;
+        input.replaceWith(span);
+    };
+
+    input.addEventListener('blur', commit);
+    input.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+        if (e.key === 'Escape') { input.removeEventListener('blur', commit); cancel(); }
+    });
+}
+refreshTree();
+
+// === 动态填充模型下拉（从 /api/models 获取 CLI 实际支持的模型）===
+function _modelGroupOf(id) {
+    if (id.startsWith('claude')) return 'Claude';
+    if (id.startsWith('gemini')) return 'Gemini';
+    if (id.startsWith('gpt')) return 'GPT';
+    return 'Other';
+}
+async function populateModels() {
+    const sel = document.getElementById('modelSelect');
+    if (!sel) return;
+    let models = [];
+    try {
+        const resp = await fetch('/api/models');
+        const data = await resp.json();
+        models = data.models || [];
+    } catch (e) { /* 网络失败时保留 Default */ }
+    if (!models.length) return;
+    const prev = sel.value;
+    sel.innerHTML = '<option value="">Default</option>';
+    const groups = {};
+    for (const id of models) {
+        const g = _modelGroupOf(id);
+        (groups[g] = groups[g] || []).push(id);
+    }
+    for (const g of ['Claude', 'Gemini', 'GPT', 'Other']) {
+        if (!groups[g]) continue;
+        const og = document.createElement('optgroup');
+        og.label = g;
+        for (const id of groups[g]) {
+            const opt = document.createElement('option');
+            opt.value = id;
+            opt.textContent = id;
+            og.appendChild(opt);
+        }
+        sel.appendChild(og);
+    }
+    if (prev && models.includes(prev)) sel.value = prev;
+}
+populateModels();
+
+// ============================================================
+// Slash Command Completions
+// ============================================================
+let _slashItems = null;      // 全部 items（懒加载）
+let _slashFuse = null;       // Fuse 实例
+let _slashFiltered = [];     // 当前过滤结果
+let _slashIdx = 0;           // 当前高亮行
+let _slashActive = false;
+
+async function _loadSlashItems() {
+    if (_slashItems !== null) return;
+    try {
+        const res = await fetch('/api/completions');
+        const data = await res.json();
+        _slashItems = [];
+        const builtins = [
+            { type: 'builtin', name: 'clear',   description: '清除当前 run 的对话上下文' },
+            { type: 'builtin', name: 'new',      description: '开始一个新的 agent 会话' },
+        ];
+        _slashItems.push(...builtins);
+        for (const a of (data.agents  || [])) _slashItems.push(a);
+        for (const c of (data.commands|| [])) _slashItems.push(c);
+        for (const s of (data.skills  || [])) _slashItems.push(s);
+
+        if (window.Fuse) {
+            _slashFuse = new Fuse(_slashItems, {
+                keys: [
+                    { name: 'name',        weight: 0.7 },
+                    { name: 'description', weight: 0.3 },
+                ],
+                threshold: 0.45,       // 0=精确 1=什么都匹配，0.45 比较宽松
+                distance: 200,
+                includeScore: true,
+                useExtendedSearch: false,
+                ignoreLocation: true,  // 不在乎关键词在字符串哪个位置
+                minMatchCharLength: 1,
+            });
+        }
+    } catch(e) {
+        _slashItems = [];
+    }
+}
+
+const TYPE_ICON = { builtin: '⌘', skill: '✦', command: '/', agent: '◈' };
+const TYPE_LABEL = { builtin: 'builtin', skill: 'skill', command: 'cmd', agent: 'agent' };
+
+function _slashFilter(query) {
+    if (!query) return _slashItems.slice(0, 20);
+    if (_slashFuse) {
+        return _slashFuse.search(query, { limit: 20 }).map(r => r.item);
+    }
+    // Fuse 未加载时降级：contains
+    const q = query.toLowerCase();
+    return _slashItems.filter(it =>
+        it.name.toLowerCase().includes(q) ||
+        (it.description || '').toLowerCase().includes(q)
+    ).slice(0, 20);
+}
+
+function _slashRender() {
+    const menu = document.getElementById('slashMenu');
+    if (!_slashActive || _slashFiltered.length === 0) {
+        menu.style.display = 'none';
+        return;
+    }
+
+    const prevScrollTop = menu.scrollTop;
+
+    menu.innerHTML = '';
+    _slashFiltered.forEach((item, i) => {
+        const row = document.createElement('div');
+        row.className = 'slash-item' + (i === _slashIdx ? ' slash-item-active' : '');
+        row.innerHTML =
+            `<span class="slash-type-icon">${TYPE_ICON[item.type] || '·'}</span>` +
+            `<span class="slash-item-name">${escapeHtml(item.name)}</span>` +
+            `<span class="slash-item-badge slash-badge-${item.type}">${TYPE_LABEL[item.type] || item.type}</span>` +
+            `<span class="slash-item-desc">${escapeHtml(item.description || '')}</span>`;
+        row.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            _slashIdx = i;
+            _slashCommit();
+        });
+        row.addEventListener('mousemove', () => {
+            if (_slashIdx === i) return; // 没变化不重渲
+            _slashIdx = i;
+            _slashRender();
+        });
+        menu.appendChild(row);
+    });
+
+    // position: fixed，锚定在输入框上方
+    const ta = document.getElementById('promptInput');
+    const rect = ta.getBoundingClientRect();
+    menu.style.display = 'block';
+    const menuH = Math.min(320, _slashFiltered.length * 40 + 8);
+    menu.style.left = rect.left + 'px';
+    menu.style.width = rect.width + 'px';
+    menu.style.top = (rect.top - menuH - 6) + 'px';
+
+    // 恢复 scrollTop，并确保当前高亮行可见
+    menu.scrollTop = prevScrollTop;
+    const activeRow = menu.querySelector('.slash-item-active');
+    if (activeRow) activeRow.scrollIntoView({ block: 'nearest' });
+}
+
+function _slashCommit() {
+    const item = _slashFiltered[_slashIdx];
+    if (!item) return;
+    const ta = document.getElementById('promptInput');
+
+    if (item.type === 'builtin') {
+        _slashClose();
+        if (item.name === 'clear') { clearCompleted(); }
+        else if (item.name === 'new') { newChat(); }
+        ta.value = '';
+        return;
+    }
+
+    // 替换输入框里的 /... 部分为触发文本
+    let fill = '';
+    if (item.type === 'skill')   fill = `/skill ${item.name} `;
+    if (item.type === 'command') fill = `/${item.name} `;
+    if (item.type === 'agent')   fill = `/agent ${item.name}: `;
+
+    // 只替换当前 slash token（光标前的 /xxx 部分）
+    const val = ta.value;
+    const pos = ta.selectionStart;
+    const before = val.slice(0, pos);
+    const tokenStart = before.lastIndexOf('/');
+    const after = val.slice(pos);
+    ta.value = val.slice(0, tokenStart) + fill + after;
+    const newPos = tokenStart + fill.length;
+    ta.setSelectionRange(newPos, newPos);
+    ta.dispatchEvent(new Event('input'));
+    _slashClose();
+}
+
+function _slashClose() {
+    _slashActive = false;
+    document.getElementById('slashMenu').style.display = 'none';
+}
+
+async function slashMenuOnInput() {
+    const ta = document.getElementById('promptInput');
+    const val = ta.value;
+    const pos = ta.selectionStart;
+    const before = val.slice(0, pos);
+
+    // 检测是否在 slash token 里（行首或空格后的 /）
+    const m = before.match(/(^|\s)\/(\S*)$/);
+    if (!m) { _slashClose(); return; }
+
+    await _loadSlashItems();
+    const query = m[2]; // / 后面的部分
+    _slashFiltered = _slashFilter(query);
+    _slashIdx = 0;
+    _slashActive = _slashFiltered.length > 0;
+    _slashRender();
+}
+
+function slashMenuHandleKey(e) {
+    if (!_slashActive) return false;
+    if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        _slashIdx = (_slashIdx + 1) % _slashFiltered.length;
+        _slashRender();
+        return true;
+    }
+    if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        _slashIdx = (_slashIdx - 1 + _slashFiltered.length) % _slashFiltered.length;
+        _slashRender();
+        return true;
+    }
+    if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        _slashCommit();
+        return true;
+    }
+    if (e.key === 'Escape') {
+        _slashClose();
+        return true;
+    }
+    return false;
+}
+
+// 点击其他地方关闭菜单
+document.addEventListener('mousedown', (e) => {
+    if (!document.getElementById('slashMenu').contains(e.target) &&
+        e.target !== document.getElementById('promptInput')) {
+        _slashClose();
+    }
+});
+
+function showToast(msg, type) {
+    const el = document.createElement('div');
+    el.className = `toast toast-${type || 'info'}`;
+    el.textContent = msg;
+    el.style.cssText = `
+        position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+        background: ${type === 'error' ? '#dc3545' : type === 'success' ? '#28a745' : '#333'};
+        color: #fff; padding: 8px 20px; border-radius: 6px; font-size: 13px;
+        z-index: 9999; opacity: 0; transition: opacity 0.3s;
+    `;
+    document.body.appendChild(el);
+    requestAnimationFrame(() => { el.style.opacity = '1'; });
+    setTimeout(() => {
+        el.style.opacity = '0';
+        setTimeout(() => el.remove(), 300);
+    }, 3000);
+}
+
+</script>
+</body>
+</html>
