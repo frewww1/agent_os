@@ -2,5 +2,7 @@
 .agent_os/cli_config.json
 .agent_os/state/
 .agent_os/workspaces/
+.agent_os/logs/
 .agent_os_run_id
 **/node_modules/
+**/__pycache__/
