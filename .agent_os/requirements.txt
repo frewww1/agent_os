@@ -1,4 +1,24 @@
-fastapi>=0.104.0
-uvicorn>=0.24.0
-pydantic>=2.5.0
+# Agent OS - Python Dependencies
+# Web framework
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+
+# Templating
 jinja2>=3.1.0
+
+# Static files
+aiofiles>=23.0
+
+# Streaming & real-time
+websockets>=11.0
+sse-starlette>=1.6.0
+
+# Markdown rendering & syntax highlighting
+markdown>=3.4.0
+Pygments>=2.15.0
+
+# Git integration
+GitPython>=3.1.0
+
+# Data & serialization
+pydantic>=2.0.0

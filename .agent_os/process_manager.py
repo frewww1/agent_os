@@ -309,7 +309,14 @@ class ProcessManager:
                 if ws_path == "_global":
                     continue  # 无 workspace 的 run 只进全局文件
                 ws_state_dir = os.path.join(ws_path, "state")
-                os.makedirs(ws_state_dir, exist_ok=True)
+                try:
+                    os.makedirs(ws_state_dir, exist_ok=True)
+                except OSError:
+                    logger.warning(
+                        f"save_runs: cannot access workspace {ws_path}, "
+                        f"skipping per-ws save (runs still saved to global file)"
+                    )
+                    continue
                 ws_runs_file = os.path.join(ws_state_dir, "runs.json")
                 data = {
                     "schema_version": 1,
@@ -480,8 +487,27 @@ class ProcessManager:
             target_abs = target_rel.replace('%dp0%', dp0)
             # 规范化多余的反斜杠
             target_abs = os.path.normpath(target_abs)
-            if os.path.exists(target_abs):
-                return ['node', target_abs]
+            if not os.path.exists(target_abs):
+                return [cli_path]
+            # 校验 Node.js 能否实际加载此模块（nvm/fnm symlink 场景下文件存在但不可加载）
+            try:
+                import subprocess
+                # 用 require.resolve 测试模块是否可解析
+                check = subprocess.run(
+                    ['node', '-e', f'require.resolve("{target_abs.replace(chr(92), chr(92)+chr(92))}")'],
+                    capture_output=True, text=True, timeout=5,
+                    cwd=os.path.dirname(target_abs),
+                )
+                if check.returncode != 0:
+                    logger.info(
+                        f"_resolve_node_cli: bypass failed for {target_abs} "
+                        f"(node can't load it), using .cmd directly"
+                    )
+                    return [cli_path]
+            except Exception as e:
+                logger.info(f"_resolve_node_cli: require.resolve check failed: {e}, using .cmd directly")
+                return [cli_path]
+            return ['node', target_abs]
         except Exception as e:
             logger.warning(f"_resolve_node_cli failed: {e}")
         return [cli_path]

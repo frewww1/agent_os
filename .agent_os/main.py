@@ -36,12 +36,24 @@ from agent_os.process_manager import ProcessManager
 from agent_os.dashboard.app import app, set_process_manager
 
 
+def _load_cli_config():
+    """从 cli_config.json 读取默认 CLI，fallback 到 codebuddy。"""
+    import json
+    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cli_config.json")
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            return json.load(f).get("cli", "codebuddy")
+    except Exception:
+        return "codebuddy"
+
+
 def main():
+    default_cli = _load_cli_config()
     parser = argparse.ArgumentParser(description="Agent OS - Web Terminal for Claude CLI")
     parser.add_argument("--port", type=int, default=8420, help="Server port (default: 8420)")
     parser.add_argument("--host", default="127.0.0.1", help="Server host (default: 127.0.0.1)")
-    parser.add_argument("--cli", default="codebuddy",
-                        help="Backend CLI command (default: codebuddy; also supports: claude, claude-internal)")
+    parser.add_argument("--cli", default=default_cli,
+                        help=f"Backend CLI command (default from config: {default_cli}; also supports: claude, claude-internal)")
     parser.add_argument("--model", default=None,
                         help="Default model for all agents (e.g. claude-sonnet-4.6, gpt-5.1). "
                              "None = use CLI default. Can be overridden per-agent in Dashboard.")

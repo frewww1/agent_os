@@ -1,8 +1,0 @@
-{
-  "run_id": "634f66963f",
-  "agent_name": "test1",
-  "prompt": "请继续执行 DAG，任务名: test1",
-  "started_at": "2026-06-26T15:22:15.548796",
-  "result": "全部完成",
-  "completed_at": "2026-06-26T15:22:58.405701"
-}

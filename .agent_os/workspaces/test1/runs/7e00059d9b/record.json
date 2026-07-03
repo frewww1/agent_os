@@ -1,6 +1,0 @@
-{
-  "run_id": "7e00059d9b",
-  "agent_name": "sgr_full_pipeline_mquk0eus",
-  "prompt": "请执行 DAG 模板: sgr_full_pipeline，任务名: sgr_full_pipeline_mquk0eus",
-  "started_at": "2026-06-26T14:32:30.233432"
-}

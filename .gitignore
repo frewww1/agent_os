@@ -1,4 +1,6 @@
-__pycache__/
-node_modules/
-logs/
-*.pyc
+.venv/
+.agent_os/cli_config.json
+.agent_os/state/
+.agent_os/workspaces/
+.agent_os_run_id
+**/node_modules/
