@@ -71,8 +71,8 @@ echo [4/6] AI CLI Setup
 
 set CB_INSTALLED=0
 set CL_INSTALLED=0
-where codebuddy >nul 2>&1 && set CB_INSTALLED=1
-where claude >nul 2>&1 && set CL_INSTALLED=1
+npm list -g @tencent/codebuddy-cli >nul 2>&1 && set CB_INSTALLED=1
+npm list -g @anthropic-ai/claude-code >nul 2>&1 && set CL_INSTALLED=1
 
 echo.
 echo   Available AI CLI options:
