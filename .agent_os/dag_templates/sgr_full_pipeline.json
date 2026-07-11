@@ -1,6 +1,7 @@
 {
   "name": "sgr_full_pipeline",
-  "description": "SGR 完整开发流水线：初始化变更 → 需求探索 → 技术点提取与讨论 → 工件生成与审查 → 代码实现 → 验证 → 测试设计/实现/执行 → 修复循环",
+  "description": "SGR 开发流程：初始化变更 → 需求探索 → 技术方案 → 工件生成与审查 → 代码实现 → 验证 → 测试。每个子需求独立走此流程。",
+  "goal": "代码实现正确、验证通过、所有测试用例全部通过",
   "steps": [
     {
       "id": "init_change",
@@ -23,6 +24,7 @@
     {
       "id": "extract_tech",
       "name": "提取技术点",
+      "goal": "tech-decisions.md 已生成，所有技术点已提取",
       "prompt": "use_skill(sgr-explore-tech-extract)｜从 .change_name 读取变更名称｜从需求文档中提取技术点清单，列出可选方案，生成 tech-decisions.md。",
       "depends_on": ["explore_req"],
       "agent_name": null,
@@ -41,6 +43,7 @@
     {
       "id": "gen_artifact_1",
       "name": "生成工件 1",
+      "goal": "proposal 已生成，覆盖需求所有要点",
       "prompt": "use_skill(sgr-gen-artifact)｜从 .change_name 读取变更名称｜生成下一个 OpenSpec 工件（proposal）。",
       "depends_on": ["explore_req", "discuss_tech"],
       "agent_name": null,
@@ -59,6 +62,7 @@
     {
       "id": "gen_artifact_2",
       "name": "生成工件 2",
+      "goal": "design 已生成，技术方案完整可行",
       "prompt": "use_skill(sgr-gen-artifact)｜从 .change_name 读取变更名称｜生成下一个 OpenSpec 工件（design）。",
       "depends_on": ["review_1"],
       "agent_name": null,
@@ -77,6 +81,7 @@
     {
       "id": "gen_artifact_3",
       "name": "生成工件 3",
+      "goal": "specs 已生成，规格定义清晰完整",
       "prompt": "use_skill(sgr-gen-artifact)｜从 .change_name 读取变更名称｜生成下一个 OpenSpec 工件（specs）。",
       "depends_on": ["review_2"],
       "agent_name": null,
@@ -95,6 +100,7 @@
     {
       "id": "gen_artifact_4",
       "name": "生成工件 4",
+      "goal": "tasks 已生成，任务拆分合理",
       "prompt": "use_skill(sgr-gen-artifact)｜从 .change_name 读取变更名称｜生成下一个 OpenSpec 工件（tasks）。",
       "depends_on": ["review_3"],
       "agent_name": null,
@@ -113,6 +119,7 @@
     {
       "id": "apply_code",
       "name": "实现代码",
+      "goal": "代码实现完整，tasks中所有任务已完成",
       "prompt": "use_skill(sgr-apply-code)｜从 .change_name 读取变更名称｜调用 openspec-apply-change 实现变更中的所有任务。",
       "depends_on": ["review_4", "discuss_tech"],
       "agent_name": null,
@@ -122,6 +129,7 @@
     {
       "id": "verify_impl",
       "name": "验证实现",
+      "goal": "实现完整、正确、连贯，无遗漏和逻辑错误",
       "prompt": "use_skill(sgr-verify-impl)｜从 .change_name 读取变更名称｜验证实现的完整性、正确性、连贯性。",
       "depends_on": ["apply_code"],
       "agent_name": null,
@@ -131,6 +139,7 @@
     {
       "id": "gen_tests_design",
       "name": "测试设计",
+      "goal": "test-cases.md 已生成，覆盖所有功能和边界",
       "prompt": "use_skill(sgr-gen-tests-design)｜从 .change_name 读取变更名称｜根据工件和实现代码，完成测试用例的设计阶段，输出 test-cases.md。",
       "depends_on": ["verify_impl"],
       "agent_name": null,
@@ -140,6 +149,7 @@
     {
       "id": "gen_tests_impl",
       "name": "测试实现",
+      "goal": "test-plan.md 已生成，用例有完整的前置条件、测试步骤和预期",
       "prompt": "use_skill(sgr-gen-tests-impl)｜从 .change_name 读取变更名称｜读取 test-cases.md，生成可执行测试计划 test-plan.md。",
       "depends_on": ["gen_tests_design"],
       "agent_name": null,
@@ -148,18 +158,10 @@
     },
     {
       "id": "run_tests",
-      "name": "执行测试",
-      "prompt": "use_skill(sgr-run-tests)｜从 .change_name 读取变更名称｜构建测试环境，执行所有测试用例。",
+      "name": "执行测试（含修复循环）",
+      "goal": "所有测试用例全部通过",
+      "prompt": "use_skill(sgr-run-tests)｜从 .change_name 读取变更名称｜构建环境 → 逐用例执行 → 遇到失败立刻派 fix agent 修复 → 修到通过才跑下一个。环境建不出来直接求助用户。",
       "depends_on": ["gen_tests_impl"],
-      "agent_name": null,
-      "model": null,
-      "type": "generative"
-    },
-    {
-      "id": "fix_loop",
-      "name": "修复循环",
-      "prompt": "use_skill(sgr-fix-loop)｜从 .change_name 读取变更名称｜按 bug 分组失败用例，制定修复计划，逐组修复并验证。",
-      "depends_on": ["run_tests"],
       "agent_name": null,
       "model": null,
       "type": "generative"

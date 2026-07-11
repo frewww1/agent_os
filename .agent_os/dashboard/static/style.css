@@ -438,15 +438,26 @@ body {
     background: var(--bg-2);
     border-color: var(--border);
 }
-.tree-badge-gen {
+.tree-badge-gen,
+.tree-badge-generative {
     color: var(--accent);
     background: rgba(167,139,250,0.14);
     border-color: rgba(167,139,250,0.32);
+}
+.tree-badge-explore {
+    color: #38bdf8;
+    background: rgba(56,189,248,0.10);
+    border-color: rgba(56,189,248,0.32);
 }
 .tree-badge-interactive {
     color: var(--user);
     background: rgba(96,165,250,0.10);
     border-color: rgba(96,165,250,0.32);
+}
+.tree-badge-goal {
+    color: #f59e0b;
+    background: rgba(245,158,11,0.10);
+    border-color: rgba(245,158,11,0.32);
 }
 
 /* === Context menu (right-click + ⋮) === */
@@ -1389,6 +1400,41 @@ textarea::placeholder { color: var(--text-faint); }
     background-position: right 6px center;
 }
 .model-picker select option { background: var(--bg-2); color: var(--text-0); }
+.goal-picker {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 2px 7px;
+    background: var(--bg-2);
+    cursor: default;
+}
+.goal-picker input[type="checkbox"] {
+    margin: 0;
+    accent-color: var(--accent);
+}
+.goal-picker-label {
+    font-weight: 600;
+    font-size: 10px;
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+.goal-input {
+    border: none;
+    background: transparent;
+    color: var(--text-0);
+    font-size: 11px;
+    outline: none;
+    width: 180px;
+    padding: 1px 3px;
+}
+.goal-input::placeholder {
+    color: var(--text-faint);
+}
 .input-hint {
     margin-left: auto;
     font-size: 10.5px;

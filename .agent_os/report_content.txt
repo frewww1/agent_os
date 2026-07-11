@@ -1,0 +1,67 @@
+BUG-3 Worker pool_hub 快照同步代码探索报告
+
+= 涉及文件 =
+
+- RewardPool 类: cross/comn_objects/reward_pool/reward_pool.py (86-536行)
+- RewardPoolGlobalBaseComp: cross/comn_utils/activity_utils/reward_pool_util.py (59-175行)
+- CrossActComp: server/svr_objects/activity/comps/custom_comps/cross_reward_pool.py (1-245行)
+- WorkerActComp: server/svr_objects/activity/comps/custom_comps/worker_reward_pool.py (1-86行)
+- SvrActComp: server/svr_objects/activity/comps/custom_comps/svr_reward_pool.py (1-75行)
+- ComnCrossActComp: server/svr_objects/activity/act_comn_cross.py (20-89行)
+- GlobalSubActCompBase: server/svr_objects/activity/act_global.py (99-237行)
+
+= xfield 层级结构 =
+
+ActComp (cross/worker)
+  @Assembler([RewardPoolGlobalBaseComp])
+    pool_hub: DictField(cls=PoolHub, key_type=int, sync=SyncMode.OWN)
+      PoolHub(Dict).__child__ = ClassField(cls=RewardPool, sync=SyncMode.OWN)
+        draw_open_time: IntField(sync=SyncMode.OWN) -- 137行
+        draw_close_time: IntField(sync=SyncMode.OWN) -- 138行
+        is_exhausted: BooleanField(sync=SyncMode.OWN) -- 140行
+        display_id: StringField(sync=SyncMode.OWN)
+        drawn: DictField(sync=SyncMode.OWN)
+        pool_id, pool_instance_id, cycle_id: IntField(sync=SyncMode.OWN)
+    roster_hub: DictField(cls=RosterHub, key_type=int, sync=SyncMode.OWN)
+
+= 同步机制 =
+
+1. 全量同步: Worker.OnFinishInitAct -> RequestPullFullDataFromCross -> Cross.FullSyncDataToSubActNode -> Serialize全部数据 -> Worker.OnCrossFullSyncDataToActNode -> UnSerialize
+   (仅初始化执行一次)
+
+2. 增量同步: Cross.BroadcastChangeDataToSubActNode(force) -> _SerializeSyncChangeFields(SyncMode._SYNC) -> 获取变更字段 -> BTO_GAME_WORKER -> Worker.OnCrossBroadcastChangeDataToActNode -> UnSerialize
+   触发条件: (a)定时器SYNC_NODE_DATA_INTERVAL>0 或 (b)显式调用BroadcastChangeDataToSubActNode
+
+= BUG-3 根因 =
+
+问题1: cross_reward_pool.py 中 SYNC_NODE_DATA_INTERVAL=0 (无定时器) 且没有任何显式调用 BroadcastChangeDataToSubActNode()
+  - 对比: 其他 BROADCAST_CHANGE_TO_GAMEWORKER=True 的组件都显式调用了 BroadcastChangeDataToSubActNode(force=True)
+  - 如 global_sandbox_boss.py:65, global_rage_boss.py:176, global_faction_support.py:75
+
+问题2: draw_open_time/draw_close_time 是 3层嵌套字段 (ActComp->pool_hub->PoolHub->RewardPool.draw_open_time)
+  - pool.Open() 设置 pool.draw_open_time 时 RewardPool 的 sync_field_dirty 被标记
+  - 但父级 PoolHub(Dict) 和 pool_hub(DictField) 可能不会收到子元素变更通知
+  - _SerializeSyncChangeFields 在 ActComp 层面遍历时，pool_hub 的 delta 可能为空
+
+问题3: Worker 端 PULL_CROSS_DATA_INTERVAL_SEC=0 (无周期性拉取)
+  - 仅 OnFinishInitAct 拉取一次全量
+  - 后续不再有数据更新
+
+= 问题复现场景 =
+
+场景A: _CreateInitialPool() 创建池 -> pool.Open() 设置 draw_open_time -> 无广播 -> Worker 看不到新池
+场景B: DoCreatePoolBySpTrigger() 创建SP触发的池 -> pool.OpenAt(start_time) -> 无广播 -> Worker 状态过期
+场景C: OnCrossBatchDraw() -> pool.Close() 设置 is_exhausted -> 无广播 -> Worker 仍认为池可用, Svr端CheckDrawWindow错误返回True
+场景D: DoResetCyclePools() -> pool.Close() 换周期关闭旧池 -> 无广播 -> Worker 池状态过期
+
+= 修复方案 =
+
+方案1 (最小改动): 修改嵌套字段后显式重赋值触发 DictField 变更
+  pool.Open() 之后加 self.pool_hub[new_pool_id] = pool
+
+方案2 (显式广播): 每次修改完 pool_hub 字段后显式调用
+  self.BroadcastChangeDataToSubActNode(force=True)
+
+方案3 (定时器): 设置 SYNC_NODE_DATA_INTERVAL = 5000
+
+方案4 (主动拉取): Worker 端设置 PULL_CROSS_DATA_INTERVAL_SEC = 10

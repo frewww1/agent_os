@@ -19,6 +19,20 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 
+def _safe_run(cmd, **kwargs):
+    """subprocess.run with utf-8 encoding by default for text=True calls.
+
+    Windows 上 subprocess 默认使用 GBK/cp936 编码解码管道输出，
+    git/node 等工具的 UTF-8 中文输出会被 _readerthread 抛出
+    UnicodeDecodeError。此 wrapper 对 text=True 的调用自动追加
+    encoding=\"utf-8\" + errors=\"replace\"。
+    """
+    if kwargs.get("text") and "encoding" not in kwargs:
+        kwargs["encoding"] = "utf-8"
+        kwargs.setdefault("errors", "replace")
+    return _safe_run(cmd, **kwargs)
+
+
 def _try_remove_lock(lock_file: str) -> None:
     """尝试删除 git index.lock 文件。用多种方式尝试，避免 CodeBuddy 的 safe-delete 拦截。
 
@@ -37,7 +51,7 @@ def _try_remove_lock(lock_file: str) -> None:
     # 方式2：subprocess 调 powershell Remove-Item -Force
     # （CodeBuddy 的 hook 拦截 os.remove，但不拦 subprocess 调用）
     try:
-        subprocess.run(
+        _safe_run(
             ["powershell", "-NoProfile", "-Command",
              f"Remove-Item -Force -LiteralPath '{lock_file}' -ErrorAction SilentlyContinue"],
             capture_output=True, timeout=5
@@ -48,7 +62,7 @@ def _try_remove_lock(lock_file: str) -> None:
         pass
     # 方式3：subprocess 调 cmd del /f /q
     try:
-        subprocess.run(
+        _safe_run(
             ["cmd", "/c", "del", "/f", "/q", lock_file],
             capture_output=True, timeout=5
         )
@@ -67,8 +81,8 @@ class Recorder:
         """初始化 Recorder。
 
         OS 在 .agent_os/ 目录里维护一个独立的 git 仓库，用于管理：
-        - .agent_os/state/runs.json（会话元数据）
-        - .agent_os/workspaces/<ws>/dag.json + runs/*/record.json + 产出文件
+        - .agent_os/state/runs.json + state/workspaces/<ws>/runs.json（会话元数据，agent 不可见）
+        - .agent_os/workspaces/<ws>/dag.json + agent 产出文件
         - .agent_os/logs/
 
         不碰 game 目录的 git 仓库（如果存在）。所有 commit/checkout/reset
@@ -105,19 +119,19 @@ class Recorder:
         with self._git_lock:
             try:
                 # 检查分支是否已存在
-                r = subprocess.run(
+                r = _safe_run(
                     ["git", "rev-parse", "--verify", branch_name],
                     cwd=git_cwd, capture_output=True, timeout=10
                 )
                 if r.returncode == 0:
                     # 分支已存在，直接切过去
-                    subprocess.run(
+                    _safe_run(
                         ["git", "checkout", branch_name],
                         cwd=git_cwd, capture_output=True, timeout=10
                     )
                 else:
                     # 创建新分支（基于当前 HEAD）
-                    subprocess.run(
+                    _safe_run(
                         ["git", "checkout", "-b", branch_name],
                         cwd=git_cwd, capture_output=True, timeout=10
                     )
@@ -153,7 +167,7 @@ class Recorder:
             prefix = base_branch
         else:
             try:
-                r = subprocess.run(
+                r = _safe_run(
                     ["git", "rev-parse", "--abbrev-ref", "HEAD"],
                     cwd=git_cwd, capture_output=True, text=True, timeout=5
                 )
@@ -165,7 +179,7 @@ class Recorder:
             n = 1
             while True:
                 branch_name = f"{prefix}-{suffix}{n}"
-                r = subprocess.run(
+                r = _safe_run(
                     ["git", "rev-parse", "--verify", branch_name],
                     cwd=git_cwd, capture_output=True, timeout=10
                 )
@@ -176,7 +190,7 @@ class Recorder:
             # 用 git branch + git checkout --force 两步：
             # 1) git branch <name> <sha> 只创建分支指针，不动工作区
             # 2) git checkout --force <name> 强制切换，覆盖未提交修改和未跟踪文件
-            r_branch = subprocess.run(
+            r_branch = _safe_run(
                 ["git", "branch", branch_name, commit_sha],
                 cwd=git_cwd, capture_output=True, text=True, timeout=10
             )
@@ -186,7 +200,7 @@ class Recorder:
                     f"{r_branch.stderr.strip()[:200]}"
                 )
                 return ""
-            r_co = subprocess.run(
+            r_co = _safe_run(
                 ["git", "checkout", "--force", branch_name],
                 cwd=git_cwd, capture_output=True, text=True, timeout=15
             )
@@ -194,7 +208,7 @@ class Recorder:
             # 但分支实际已切换。用 rev-parse 确认当前分支。
             current = ""
             try:
-                r_cur = subprocess.run(
+                r_cur = _safe_run(
                     ["git", "rev-parse", "--abbrev-ref", "HEAD"],
                     cwd=git_cwd, capture_output=True, text=True, timeout=5
                 )
@@ -220,7 +234,7 @@ class Recorder:
         _try_remove_lock(os.path.join(git_cwd, ".git", "index.lock"))
         with self._git_lock:
             try:
-                r = subprocess.run(
+                r = _safe_run(
                     ["git", "checkout", branch_name],
                     cwd=git_cwd, capture_output=True, text=True, timeout=10
                 )
@@ -265,7 +279,7 @@ class Recorder:
         ws_id = self._ws_id(workspace_path)
         # 幂等检查：当前分支是否已有 baseline commit
         try:
-            r = subprocess.run(
+            r = _safe_run(
                 ["git", "log", "-F", f"--grep=[task:{ws_id}:baseline]",
                  "--format=%H", "-n", "1"],
                 cwd=git_cwd, capture_output=True, text=True, timeout=10
@@ -274,19 +288,13 @@ class Recorder:
                 return  # 已有 baseline，跳过
         except Exception:
             pass
-        # 创建空的分片 runs.json（如果不存在）
-        ws_state_dir = os.path.join(workspace_path, "state")
-        os.makedirs(ws_state_dir, exist_ok=True)
-        ws_runs_file = os.path.join(ws_state_dir, "runs.json")
-        if not os.path.exists(ws_runs_file):
-            import json as _json_mod
-            with open(ws_runs_file, "w", encoding="utf-8") as f:
-                _json_mod.dump({"schema_version": 1, "runs": []}, f, ensure_ascii=False)
+        # 确保 workspace 根目录存在
+        os.makedirs(workspace_path, exist_ok=True)
         self._ensure_git(git_cwd)
         with self._git_lock:
             _try_remove_lock(os.path.join(git_cwd, ".git", "index.lock"))
             try:
-                r_add = subprocess.run(
+                r_add = _safe_run(
                     ["git", "add", "."],
                     cwd=git_cwd, capture_output=True, text=True, timeout=30
                 )
@@ -295,7 +303,7 @@ class Recorder:
                         f"baseline git add . failed: "
                         f"{r_add.stderr.strip()[:200]}"
                     )
-                r_commit = subprocess.run(
+                r_commit = _safe_run(
                     ["git", "commit", "-m",
                      f"[task:{ws_id}:baseline] {agent_name or 'unnamed'}",
                      "--allow-empty"],
@@ -366,7 +374,7 @@ class Recorder:
                 batch_size = 50
                 for i in range(0, len(files_to_add), batch_size):
                     batch = files_to_add[i:i+batch_size]
-                    subprocess.run(
+                    _safe_run(
                         ["git", "add", "--"] + batch,
                         cwd=git_cwd, capture_output=True, timeout=30
                     )
@@ -377,7 +385,7 @@ class Recorder:
         wdir = self._git_cwd(workspace_path)
         ws_id = self._ws_id(workspace_path)
         try:
-            r = subprocess.run(
+            r = _safe_run(
                 ["git", "log", "--all", "-F", f"--grep=[step:{ws_id}:{step_id}]",
                  "--format=%H", "-n", "1"],
                 cwd=wdir, capture_output=True, text=True, timeout=15
@@ -392,7 +400,7 @@ class Recorder:
         short_id = run_id[:8]
         ws_id = self._ws_id(workspace_path)
         try:
-            r = subprocess.run(
+            r = _safe_run(
                 ["git", "log", "--all", "-F", f"--grep=[agent:{ws_id}:{short_id}]",
                  "--format=%H", "-n", "1"],
                 cwd=wdir, capture_output=True, text=True, timeout=15
@@ -426,7 +434,7 @@ class Recorder:
             return {"ok": False, "sha": sha, "error": "git lock timeout (another git operation in progress)"}
         try:
             # 取父 commit：回到 step 开始前的状态
-            r_parent = subprocess.run(
+            r_parent = _safe_run(
                 ["git", "rev-parse", f"{sha}~1"],
                 cwd=wdir, capture_output=True, text=True, timeout=10
             )
@@ -436,7 +444,7 @@ class Recorder:
             else:
                 # 没有父 commit，用 baseline commit
                 ws_id = self._ws_id(workspace_path)
-                r_base = subprocess.run(
+                r_base = _safe_run(
                     ["git", "log", "--all", "-F", f"--grep=[task:{ws_id}:baseline]",
                      "--format=%H", "-n", "1"],
                     cwd=wdir, capture_output=True, text=True, timeout=15
@@ -460,7 +468,7 @@ class Recorder:
         mode = "--soft" if not hard else "--hard"
         with self._git_lock:
             try:
-                subprocess.run(
+                _safe_run(
                     ["git", "reset", mode, sha],
                     cwd=wdir, capture_output=True, text=True, timeout=15, check=True
                 )
@@ -474,7 +482,7 @@ class Recorder:
         wdir = self._git_cwd(workspace_path)
         out: list[dict] = []
         try:
-            r = subprocess.run(
+            r = _safe_run(
                 ["git", "log", "--all", "-F", "--grep=[step:", "--format=%H\x1f%s\x1f%cI"],
                 cwd=wdir, capture_output=True, text=True, timeout=15
             )
@@ -501,7 +509,7 @@ class Recorder:
         wdir = self._git_cwd(workspace_path)
         files = []
         try:
-            r = subprocess.run(
+            r = _safe_run(
                 ["git", "diff-tree", "--no-commit-id", "--name-only", "-r", sha],
                 cwd=wdir, capture_output=True, text=True, timeout=10
             )
@@ -532,7 +540,8 @@ class Recorder:
         return os.path.basename(workspace_path.rstrip("/\\"))
 
     def _runs_dir(self, workspace_path: str) -> str:
-        return os.path.join(self._workspace_dir(workspace_path), "runs")
+        ws_name = os.path.basename(workspace_path.rstrip("/\\"))
+        return os.path.join(self.BASE_DIR, "state", "records", ws_name)
 
     def _record_path(self, workspace_path: str, run_id: str) -> str:
         return os.path.join(self._runs_dir(workspace_path), run_id, "record.json")
@@ -557,13 +566,13 @@ class Recorder:
         """确保 .agent_os/ 目录有独立 git 仓库。首次调用时 git init。"""
         if not os.path.isdir(os.path.join(wdir, ".git")):
             try:
-                subprocess.run(["git", "init"], cwd=wdir, capture_output=True, timeout=15)
+                _safe_run(["git", "init"], cwd=wdir, capture_output=True, timeout=15)
                 # 配置 user 信息（避免 commit 失败）
-                subprocess.run(
+                _safe_run(
                     ["git", "config", "user.email", "agent-os@local"],
                     cwd=wdir, capture_output=True, timeout=5
                 )
-                subprocess.run(
+                _safe_run(
                     ["git", "config", "user.name", "Agent OS"],
                     cwd=wdir, capture_output=True, timeout=5
                 )
@@ -574,8 +583,8 @@ class Recorder:
         """在 .agent_os/ 独立仓库执行 git commit。
 
         用 git add . + git commit 把 .agent_os/ 下所有改动纳入：
-        - state/runs.json（会话元数据）
-        - workspaces/<ws>/dag.json + runs/*/record.json + agent 产出文件
+        - state/runs.json + state/workspaces/<ws>/runs.json + state/records/<ws>/*/record.json
+        - workspaces/<ws>/dag.json + agent 产出文件
         - logs/agent_os.log
 
         独立仓库只含 .agent_os 内容（几十到几百个文件），不会超时。
@@ -583,7 +592,7 @@ class Recorder:
         with self._git_lock:
             _try_remove_lock(os.path.join(wdir, ".git", "index.lock"))
             try:
-                r_add = subprocess.run(
+                r_add = _safe_run(
                     ["git", "add", "."],
                     cwd=wdir, capture_output=True, text=True, timeout=30
                 )
@@ -592,7 +601,7 @@ class Recorder:
                         f"git add . failed (cwd={wdir}): "
                         f"{r_add.stderr.strip()[:200]}"
                     )
-                r_commit = subprocess.run(
+                r_commit = _safe_run(
                     ["git", "commit", "-m", msg, "--allow-empty"],
                     cwd=wdir, capture_output=True, text=True, timeout=30
                 )

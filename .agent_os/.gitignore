@@ -1,0 +1,24 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs
+logs/
+
+# Runtime state
+state/
+
+# Runtime workspaces
+workspaces/
+
+# VS Code extension build artifacts
+vscode-extension/node_modules/
+vscode-extension/out/
+
+# Pytest cache
+tests/.pytest_cache/
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -69,6 +69,8 @@ class RunInfo:
     workspace_path: str | None = None        # 该 run 的工作目录（根 agent 自建，子 agent 继承）
     step_id: str | None = None                # DAG step 标识；有值则 report 时打 [step:<id>] commit
     system_prompt: str | None = None          # 启动时的 system prompt（用于 /clear 后恢复）
+    goal: str | None = None                   # 目标条件（用户设定，agent 完成后自动评估是否达成）
+    goal_retries: int = 0                     # 已重试次数，到达上限后不再自动重启
     _recorded: bool = False                   # 防止重复写入 record.json
     output_lines: deque = field(default_factory=lambda: deque(maxlen=10000))
     # 结构化事件流，前端按 kind 渲染（与 output_lines 并行维护，不破坏旧接口）
@@ -153,6 +155,7 @@ class ProcessManager:
         self.spawn_requests: dict[str, SpawnRequest] = {}
         self._resume_callback = None  # set by main.py for async resume
         self._models_cache: list[str] | None = None  # `<cli> --help` 解析出的模型列表缓存
+        self._originally_waiting: set[str] = set()  # 重启前状态为 WAITING 的 run_id
         self.recorder = Recorder(project_root=self.project_root)  # workspace 记忆层
 
         # 持久化文件
@@ -162,6 +165,8 @@ class ProcessManager:
         # 启动时尝试恢复历史 runs（仅元数据 + 事件流；进程引用全部丢失，
         # 这些 run 之后都是只读的，能查看 / 删除 / 导出但不能 resume）
         self._load_runs_from_disk()
+        # 迁移旧位置 workspaces/<ws>/state/ → state/workspaces/<ws>/
+        self._migrate_legacy_workspace_state()
         # 节流写盘：每次 add_event 不直接落盘，由后台线程定期落盘
         self._save_lock = threading.Lock()
         self._save_dirty = False
@@ -283,6 +288,8 @@ class ProcessManager:
             "label": ri.label,
             "step_id": ri.step_id,
             "system_prompt": ri.system_prompt,
+            "goal": ri.goal,
+            "goal_retries": ri.goal_retries,
         }
         return self._sanitize(raw)
 
@@ -290,7 +297,7 @@ class ProcessManager:
         """保存所有 runs 到磁盘。
 
         按 workspace 分片存储：每个 workspace 写到
-        ``workspaces/<ws>/state/runs.json``，让回退时 run 状态也跟着还原。
+        ``state/workspaces/<ws>/runs.json``（不在 workspace 内部，避免 agent 读到）。
         同时写全局聚合文件 ``state/runs.json`` 供跨 workspace 查询。
         """
         try:
@@ -308,12 +315,13 @@ class ProcessManager:
             for ws_path, runs_list in by_ws.items():
                 if ws_path == "_global":
                     continue  # 无 workspace 的 run 只进全局文件
-                ws_state_dir = os.path.join(ws_path, "state")
+                ws_name = os.path.basename(ws_path)
+                ws_state_dir = os.path.join(self._state_dir, "workspaces", ws_name)
                 try:
                     os.makedirs(ws_state_dir, exist_ok=True)
                 except OSError:
                     logger.warning(
-                        f"save_runs: cannot access workspace {ws_path}, "
+                        f"save_runs: cannot create state dir for {ws_name}, "
                         f"skipping per-ws save (runs still saved to global file)"
                     )
                     continue
@@ -328,6 +336,16 @@ class ProcessManager:
                 with open(tmp, "w", encoding="utf-8") as f:
                     f.write(text)
                 os.replace(tmp, ws_runs_file)
+                # 清理旧位置（workspaces/<ws>/state/runs.json），避免 agent 读到
+                old_state = os.path.join(ws_path, "state", "runs.json")
+                if os.path.exists(old_state):
+                    try:
+                        os.remove(old_state)
+                        old_dir = os.path.dirname(old_state)
+                        if os.path.isdir(old_dir) and not os.listdir(old_dir):
+                            os.rmdir(old_dir)
+                    except OSError:
+                        pass
 
             # 2) 全局聚合文件（兼容 /api/runs 等跨 workspace 查询）
             data = {
@@ -346,17 +364,26 @@ class ProcessManager:
     def _load_runs_from_disk(self):
         """启动时从磁盘恢复历史 runs（仅作只读历史展示）。
 
-        优先从各 workspace 的分片文件加载（workspaces/<ws>/state/runs.json），
+        优先从 state/workspaces/<ws>/runs.json 加载（新位置），
+        兼容旧位置 workspaces/<ws>/state/runs.json，
         兜底用全局 state/runs.json。去重：同一 run_id 只保留一份。
         """
         # 收集所有候选文件：分片优先，全局兜底
         candidates: list[tuple[str, str]] = []  # [(file_path, source_tag), ...]
+        # 新位置：state/workspaces/<ws>/runs.json
+        ws_state_dir = os.path.join(self._state_dir, "workspaces")
+        if os.path.isdir(ws_state_dir):
+            for ws_name in os.listdir(ws_state_dir):
+                ws_file = os.path.join(ws_state_dir, ws_name, "runs.json")
+                if os.path.isfile(ws_file):
+                    candidates.append((ws_file, "shard"))
+        # 兼容旧位置：workspaces/<ws>/state/runs.json
         workspaces_dir = os.path.join(self.project_root, ".agent_os", "workspaces")
         if os.path.isdir(workspaces_dir):
             for ws_name in os.listdir(workspaces_dir):
-                ws_state = os.path.join(workspaces_dir, ws_name, "state", "runs.json")
-                if os.path.exists(ws_state):
-                    candidates.append((ws_state, "shard"))
+                old_ws_state = os.path.join(workspaces_dir, ws_name, "state", "runs.json")
+                if os.path.exists(old_ws_state):
+                    candidates.append((old_ws_state, "shard_legacy"))
         if os.path.exists(self._runs_file):
             candidates.append((self._runs_file, "global"))
 
@@ -377,6 +404,8 @@ class ProcessManager:
                         continue
                     seen_run_ids.add(rid)
                     status_str = r.get("status", "completed")
+                    if status_str == "waiting":
+                        self._originally_waiting.add(rid)
                     if status_str in ("running", "waiting"):
                         status_str = "stopped"
                     ri = RunInfo(
@@ -399,6 +428,8 @@ class ProcessManager:
                         spawn_id=r.get("spawn_id"),
                         step_id=r.get("step_id"),
                         system_prompt=r.get("system_prompt"),
+                        goal=r.get("goal"),
+                        goal_retries=r.get("goal_retries", 0),
                     )
                     ri._fallback_result = r.get("fallback_result")
                     ri._event_seq = r.get("event_seq", 0)
@@ -439,12 +470,23 @@ class ProcessManager:
             
             parent_session = parent.session_id if parent else ""
             
-            # 统计已完成/失败的子 run
+            # 统计已完成的子 run
+            # STOPPED 状态的子 agent：可能在重启前已完成（有结果）或被强制
+            # 中止（无结果）。只有有结果的才算"完成"，无结果的视为未完成，
+            # 等子 agent 真正完成后由 _on_run_completed 正常触发 resume。
             completed = set()
             for cid in child_ids:
                 child = self.runs.get(cid)
-                if child and child.status in (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.STOPPED):
+                if not child:
+                    continue
+                if child.status in (RunStatus.COMPLETED, RunStatus.FAILED):
                     completed.add(cid)
+                elif child.status == RunStatus.STOPPED:
+                    # STOPPED 是重启强制改为 stopped 的。
+                    # 只有 reported_result（report.py 调用过）才算真正完成。
+                    # _fallback_result/messages 可能是上个 session 残留，不可信。
+                    if child.reported_result:
+                        completed.add(cid)
             
             spawn_req = SpawnRequest(
                 spawn_id=spawn_id,
@@ -454,13 +496,128 @@ class ProcessManager:
                 wait_strategy="all",
             )
             spawn_req.completed_children = completed
-            # 如果所有子 run 都已完成，标记为已解决
+            # 如果所有子 run 都已完成，标记为已解决。
+            # 但如果子 agent 仅因重启被强制置为 stopped（无实际结果），
+            # 则不标记 resolved —— 等子 agent 真正完成后由 _on_run_completed 触发 resume。
             if len(completed) == len(child_ids):
-                spawn_req.is_resolved = True
+                child_has_result = lambda cid: (
+                    (c := self.runs.get(cid)) and (
+                        c.reported_result  # 只有 report.py 调过才算真正完成
+                    )
+                )
+                if any(child_has_result(cid) for cid in child_ids):
+                    spawn_req.is_resolved = True
+            logger.debug(
+                f"_restore_spawn_requests: {spawn_id[:10]} parent={parent_id[:8]} "
+                f"children={[c[:8] for c in child_ids]} "
+                f"completed={[c[:8] for c in completed]} resolved={spawn_req.is_resolved}"
+            )
+                # else: 子 agent 被强制 stopped 但无结果，不标记 resolved
             self.spawn_requests[spawn_id] = spawn_req
             
         if parent_groups:
             logger.info(f"restored {len(parent_groups)} spawn requests from historical runs")
+
+    def _migrate_legacy_workspace_state(self):
+        """将旧位置的 OS 文件从 workspace 内搬到 state/ 下，避免 agent 读到。
+
+        迁移内容：
+        - workspaces/<ws>/state/runs.json → state/workspaces/<ws>/runs.json
+        - workspaces/<ws>/runs/<run_id>/ → state/records/<ws>/<run_id>/
+        """
+        import shutil
+        workspaces_dir = os.path.join(self.project_root, ".agent_os", "workspaces")
+        if not os.path.isdir(workspaces_dir):
+            return
+        migrated_state = 0
+        migrated_runs = 0
+        for ws_name in os.listdir(workspaces_dir):
+            ws_path = os.path.join(workspaces_dir, ws_name)
+            # 1) 迁移 state/runs.json
+            old_state_file = os.path.join(ws_path, "state", "runs.json")
+            if os.path.exists(old_state_file):
+                new_dir = os.path.join(self._state_dir, "workspaces", ws_name)
+                new_file = os.path.join(new_dir, "runs.json")
+                try:
+                    if os.path.exists(new_file):
+                        os.remove(old_state_file)
+                    else:
+                        os.makedirs(new_dir, exist_ok=True)
+                        os.replace(old_state_file, new_file)
+                    # 清理空 state/ 目录
+                    old_state_dir = os.path.dirname(old_state_file)
+                    if os.path.isdir(old_state_dir) and not os.listdir(old_state_dir):
+                        os.rmdir(old_state_dir)
+                    migrated_state += 1
+                except OSError as e:
+                    logger.warning(f"migrate state for {ws_name}: {e}")
+            # 2) 迁移 runs/<run_id>/record.json
+            old_runs_dir = os.path.join(ws_path, "runs")
+            if os.path.isdir(old_runs_dir):
+                new_records_dir = os.path.join(self._state_dir, "records", ws_name)
+                for run_id in os.listdir(old_runs_dir):
+                    old_run_dir = os.path.join(old_runs_dir, run_id)
+                    new_run_dir = os.path.join(new_records_dir, run_id)
+                    if not os.path.isdir(old_run_dir):
+                        continue
+                    try:
+                        if not os.path.exists(new_run_dir):
+                            os.makedirs(os.path.dirname(new_run_dir), exist_ok=True)
+                            shutil.move(old_run_dir, new_run_dir)
+                        else:
+                            shutil.rmtree(old_run_dir)
+                        migrated_runs += 1
+                    except OSError as e:
+                        logger.warning(f"migrate runs/{run_id} for {ws_name}: {e}")
+                # 清理空 runs/ 目录
+                try:
+                    if not os.listdir(old_runs_dir):
+                        os.rmdir(old_runs_dir)
+                except OSError:
+                    pass
+        if migrated_state:
+            logger.info(f"migrated {migrated_state} legacy workspace state files")
+        if migrated_runs:
+            logger.info(f"migrated {migrated_runs} legacy run record dirs to state/records/")
+
+    def _resume_restored_parents(self):
+        """重启后恢复已完成的父 agent（子 agent 在重启前已通过 Done/report.py 完成）。
+
+        仅恢复 _restore_spawn_requests 标记为已解决的 spawn 请求。
+        不解决的情况（子 agent 仅因重启被强制 stopped，无实际结果）由
+        用户操作（Done 点击/report.py 调用）触发 _on_run_completed 正常 resume。
+        """
+        resumed_count = 0
+        for spawn_id, spawn_req in list(self.spawn_requests.items()):
+            # 只有 genuinely resolved 的 spawn 请求才恢复
+            # （_restore_spawn_requests 仅在子 agent 有实际结果时标记 resolved）
+            if not spawn_req.is_resolved:
+                continue
+
+            parent_id = spawn_req.parent_run_id
+            parent = self.runs.get(parent_id)
+            if not parent or not parent.session_id:
+                continue
+            if parent.status != RunStatus.STOPPED:
+                continue
+
+            logger.info(
+                f"_resume_restored_parents: resuming {parent_id[:8]} "
+                f"({len(spawn_req.child_run_ids)} children)"
+            )
+            import threading
+            threading.Thread(
+                target=self.resume_parent,
+                args=(spawn_req,),
+                daemon=True,
+                name=f"restore-resume-{parent_id[:6]}",
+            ).start()
+            resumed_count += 1
+
+        if resumed_count:
+            logger.info(
+                f"_resume_restored_parents: resumed {resumed_count} parent(s)"
+            )
 
     @staticmethod
     def _resolve_node_cli(cli_path: str) -> list[str]:
@@ -495,8 +652,8 @@ class ProcessManager:
                 # 用 require.resolve 测试模块是否可解析
                 check = subprocess.run(
                     ['node', '-e', f'require.resolve("{target_abs.replace(chr(92), chr(92)+chr(92))}")'],
-                    capture_output=True, text=True, timeout=5,
-                    cwd=os.path.dirname(target_abs),
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=5, cwd=os.path.dirname(target_abs),
                 )
                 if check.returncode != 0:
                     logger.info(
@@ -593,6 +750,7 @@ class ProcessManager:
                   system_prompt: str | None = None,
                   model: str | None = None,
                   task_type: str = "generative",
+                  goal: str | None = None,
                   workspace_name: str | None = None) -> str:
         """启动新 claude 会话，返回 run_id。
 
@@ -613,7 +771,8 @@ class ProcessManager:
         if model is None:
             model = self.default_model
         logger.info(f"start_run: run_id={run_id}, session_id={session_id[:13]}, "
-                    f"prompt={prompt[:50]}, interactive={interactive}, model={model}")
+                    f"prompt={prompt[:50]}, interactive={interactive}, model={model}, "
+                    f"goal={goal}")
 
 
         cmd = self._build_cmd(prompt, agent_name=agent_name, system_prompt=system_prompt,
@@ -663,6 +822,7 @@ class ProcessManager:
             workspace_path=env.get("AGENT_OS_WORKSPACE"),
             step_id=env.get("AGENT_OS_STEP_ID"),  # DAG step：由 spawn 经 env_extras 注入
             system_prompt=system_prompt,  # 保存用于 /clear 后恢复
+            goal=goal,  # 会话级别目标条件
             _process=process,
             _new_output_event=asyncio.Event(),
             _loop=loop,
@@ -771,6 +931,7 @@ class ProcessManager:
             task_type = task.get("type") or task.get("agent_type") or "generative"
             child_model = task.get("model") or parent_model
             step_id = task.get("step_id")  # DAG step 标识，透传给子 agent env
+            goal = task.get("goal")  # DAG step 级 goal（session 级也由此传入）
             if not prompt:
                 logger.warning(f"spawn_children: task {task.get('id','?')} has no prompt, skipping")
                 continue
@@ -778,14 +939,15 @@ class ProcessManager:
                 spawned_step_ids.append(step_id)
 
             # 为子 agent 注入 system prompt：
-            # - generative: 引导 agent 自行调用 report.py 结束（参考 sgr-spawn-agent）
-            # - interactive: 提示用户会点 Done，但也可以选择主动 report
-            # 两种类型都能用 send.py 中途汇报
-            sub_system_prompt = self._build_subagent_system_prompt(task_type)
+            # 任务指令合并到 system prompt 中（--append-system-prompt），
+            # 确保优先级稳定，不受多轮对话或 CLI 行为影响。
+            # 用户 prompt 仅作为最简触发语。
+            sub_system_prompt = self._build_subagent_system_prompt(
+                task_type, prompt, parent_workspace)
 
-            # 在用户 prompt 外包一层强制通信协议（system prompt 优先级不够，
-            # 任务 prompt 里直接写"协议头"和"协议尾"才能稳定生效）
-            wrapped_prompt = self._wrap_child_prompt(prompt, task_type, parent_workspace)
+            # 用户 prompt：最简触发语（实际任务指令在 system prompt 中）
+            task_hint = prompt.split("\n")[0][:80] if prompt else "task"
+            wrapped_prompt = f"[Agent OS] Execute: {task_hint}"
 
             # 子 agent 继承父 agent 的 workspace
             child_env_extras = {}
@@ -802,6 +964,7 @@ class ProcessManager:
                 system_prompt=sub_system_prompt,
                 model=child_model,
                 task_type=task_type,
+                goal=goal,
                 env_extras=child_env_extras if child_env_extras else None,
             )
             child_run_ids.append(run_id)
@@ -984,7 +1147,14 @@ class ProcessManager:
                 pass
 
         if run_info.status == RunStatus.RUNNING:
-            # 进程还在跑，标记完成
+            # 先终止进程，确保后续 _on_run_completed → continue_run 时进程已退出
+            proc = run_info._process
+            if proc and proc.poll() is None:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=5)
+                except Exception:
+                    pass
             run_info.status = RunStatus.COMPLETED
             run_info.completed_at = datetime.now()
             run_info.output_lines.append(f"[Agent OS] Task reported complete: {result[:100]}")
@@ -1002,7 +1172,7 @@ class ProcessManager:
         return True
 
     def continue_run(self, run_id: str, prompt: str, source: str = "user",
-                     model: str | None = None) -> bool:
+                     model: str | None = None, goal: str | None = None) -> bool:
         """在已有会话上追加一轮对话。可指定 model 覆盖当前会话的模型。"""
         run_info = self.runs.get(run_id)
         if not run_info:
@@ -1011,6 +1181,14 @@ class ProcessManager:
             return False
         if not run_info.session_id:
             return False
+
+        # 更新 goal（允许运行时设定/覆盖）
+        if goal is not None:
+            run_info.goal = goal if goal else None
+            run_info.goal_retries = 0  # 重置重试计数
+        elif source != "os":
+            # 用户手动 continue → 重置 goal 重试计数，给一次新的机会
+            run_info.goal_retries = 0
 
         # sanitize prompt 防止 surrogate 进入内存
         prompt = prompt.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
@@ -1351,7 +1529,8 @@ class ProcessManager:
                     wdir = ri.workspace_path
                     parent = _sp.run(
                         ["git", "rev-parse", f"{run_sha}~1"],
-                        cwd=wdir, capture_output=True, text=True, timeout=10
+                        cwd=wdir, capture_output=True, text=True,
+                        encoding="utf-8", errors="replace", timeout=10
                     )
                     parent_sha = parent.stdout.strip()
                     if parent_sha and parent.returncode == 0:
@@ -1488,12 +1667,14 @@ class ProcessManager:
                 git_cwd = self.recorder._git_cwd(ws)
                 subprocess.run(
                     ["git", "add", "."],
-                    cwd=git_cwd, capture_output=True, text=True, timeout=15
+                    cwd=git_cwd, capture_output=True, text=True,
+                    encoding="utf-8", errors="replace", timeout=15
                 )
                 r_commit = subprocess.run(
                     ["git", "commit", "-m",
                      f"[checkout:{self.recorder._ws_id(ws)}:{step_id}] reset {len(affected)} step(s) to pending"],
-                    cwd=git_cwd, capture_output=True, text=True, timeout=15
+                    cwd=git_cwd, capture_output=True, text=True,
+                    encoding="utf-8", errors="replace", timeout=15
                 )
                 if r_commit.returncode != 0:
                     stderr = r_commit.stderr.strip()
@@ -1545,14 +1726,15 @@ class ProcessManager:
                             return wp
             except Exception:
                 pass
-        # 2. 扫描 workspaces/ 目录下的 runs/ 子目录
-        workspaces_dir = os.path.join(self.project_root, ".agent_os", "workspaces")
-        if os.path.isdir(workspaces_dir):
-            for ws_name in os.listdir(workspaces_dir):
-                ws_path = os.path.join(workspaces_dir, ws_name)
-                runs_dir = os.path.join(ws_path, "runs")
-                if os.path.isdir(runs_dir) and run_id in os.listdir(runs_dir):
-                    return ws_path
+        # 2. 扫描 state/records/ 目录
+        records_dir = os.path.join(self._state_dir, "records")
+        if os.path.isdir(records_dir):
+            for ws_name in os.listdir(records_dir):
+                if os.path.isdir(os.path.join(records_dir, ws_name, run_id)):
+                    # 找到 run_id 对应的 workspace
+                    ws_path = os.path.join(self.project_root, ".agent_os", "workspaces", ws_name)
+                    if os.path.isdir(ws_path):
+                        return ws_path
         return None
 
     def dag_status_by_workspace(self, workspace_id: str) -> dict:
@@ -1649,13 +1831,22 @@ class ProcessManager:
         return [self._build_tree_node(ri) for ri in roots]
 
     @staticmethod
-    def _unwrap_task_prompt(prompt: str) -> str:
-        """从被 _wrap_child_prompt 包装的 prompt 中提取真实任务文本。
+    def _unwrap_task_prompt(prompt: str, system_prompt: str = "") -> str:
+        """提取真实任务文本供树视图标题与 resume_parent 子任务摘要共用。
 
-        优先取 [Your Task]...[/Your Task] 中间内容；否则剥掉通信协议头/收尾段
-        后取首行。供树视图标题与 resume_parent 子任务摘要共用，避免把
-        '[Agent OS Communication Protocol]' 协议头当成任务描述。"""
+        按优先级依次尝试：
+        1. 从 system_prompt 的 ## Task 段提取（新格式：任务指令在 system prompt 中）
+        2. 从 prompt 的 [Your Task]...[/Your Task] 提取（旧格式：_wrap_child_prompt 包装）
+        3. 剥掉通信协议头后取首行"""
         import re as _re
+        # 优先从 system_prompt 提取 ## Task 段
+        if system_prompt:
+            m = _re.search(r'## Task\n([\s\S]+?)(?=\n## |\Z)', system_prompt)
+            if m:
+                task = m.group(1).strip()
+                if task:
+                    return task
+        # 兼容旧格式：[Your Task]...[/Your Task]
         m = _re.search(r'\[Your Task\]\n?([\s\S]*?)\n?\[/Your Task\]', prompt)
         if m:
             return m.group(1).strip()
@@ -1671,12 +1862,18 @@ class ProcessManager:
             if child:
                 children.append(self._build_tree_node(child))
 
-        # 提取可读标题：优先 [Your Task]...[/Your Task]，否则取 prompt 首行
-        display_prompt = self._unwrap_task_prompt(run_info.prompt or "")
+        # 提取可读标题：优先从 system_prompt 的 ## Task 段提取，
+        # 否则兼容旧格式 [Your Task]...[/Your Task]
+        display_prompt = self._unwrap_task_prompt(
+            run_info.prompt or "",
+            run_info.system_prompt or "",
+        )
 
         return {
             "run_id": run_info.run_id,
             "prompt": display_prompt[:120],
+            "goal": run_info.goal or "",
+            "goal_retries": run_info.goal_retries,
             "label": run_info.label,
             "status": run_info.status.value,
             "session_id": run_info.session_id,
@@ -1716,15 +1913,217 @@ class ProcessManager:
             except asyncio.TimeoutError:
                 continue
 
+    def _evaluate_goal(self, run_info: RunInfo) -> tuple[bool, str]:
+        """评估 agent 是否达成了 goal。返回 (is_met, reason)。
+        起一个独立的 codebuddy 子进程做语义判断。
+
+        上下文从 4 个来源收集后统一截断到 12000 chars：
+        1. reported_result / _fallback_result（agent 的最终输出）
+        2. output_events 中的 text / tool_result / report（结构化事件，最精炼）
+        3. output_lines（raw 对话，去冗余后兜底）
+        4. messages（interactive agent 的进度消息）
+        """
+        goal = run_info.goal or ""
+        if not goal:
+            return True, "no goal"
+
+        # 构建评估上下文，统一收集后截断（不每源限制）
+        parts = []
+
+        # 来源1：agent 最终输出
+        if run_info.reported_result:
+            parts.append(f"Final report: {run_info.reported_result}")
+        elif run_info._fallback_result:
+            parts.append(f"Final output: {run_info._fallback_result}")
+
+        # 来源2：结构化事件（最精炼的信息源）
+        event_texts = [
+            e.get("text", "") for e in run_info.output_events
+            if e.get("kind") in ("text", "tool_result", "report")
+        ]
+        if event_texts:
+            parts.append("Events:\n" + "\n".join(event_texts))
+
+        # 来源3：output_lines（raw 输出），去 CLI 冗余头
+        if run_info.output_lines:
+            raw = []
+            for l in list(run_info.output_lines):
+                s = str(l)
+                # 跳过 CLI verbose 头
+                if s.startswith("───") or s.startswith("==="):
+                    continue
+                raw.append(s)
+            if raw:
+                parts.append("Raw output:\n" + "\n".join(raw))
+
+        # 来源4：messages
+        if run_info.messages:
+            msgs = "\n".join(
+                m.get("msg", "") for m in run_info.messages[-15:]
+            )
+            if msgs.strip():
+                parts.append(f"Messages: {msgs}")
+
+        full_context = "\n\n".join(parts)[:12000]
+        if not full_context.strip():
+            return True, "no content to evaluate (assume met)"
+
+        try:
+            import subprocess as _subp
+            prompt = (
+                f"Evaluate this task outcome. Reply ONLY with YES or NO on the first line, "
+                f"then a brief reason on the second line. Do NOT ask questions. Do NOT "
+                f"generate any other content.\n\n"
+                f'Goal: {goal}\n\n'
+                f'{full_context[:12000]}\n\n'
+                f'Did the agent achieve the goal? (YES/NO)'
+            )
+            # 用 cli_prefix（node + js）而非 cli_command（.CMD），
+            # .CMD 文件无法处理多行 prompt（会截断），导致上下文丢失。
+            cmd = list(self.cli_prefix) + ["-p", prompt, "-y",
+                 "--max-turns", "1",
+                 "--permission-mode", "bypassPermissions"]
+            proc = _subp.run(
+                cmd,
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=300,
+                cwd=self.project_root,
+                env={**os.environ, "NO_COLOR": "1"},
+            )
+            stdout = (proc.stdout or "").strip()
+            if proc.returncode != 0 and not stdout:
+                return False, f"eval error: exit={proc.returncode}, no output"
+            if not stdout:
+                return True, "eval: empty output (assume met)"
+
+            # 解析输出：逐行找第一个 YES 或 NO
+            # 排除 "YES or NO" / "YES 或 NO" 等询问句式
+            found = None
+            for line in stdout.upper().split("\n"):
+                word = line.strip().lstrip("-*# ").strip()
+                if not word:
+                    continue
+                # 判断是 YES 还是 NO：必须是单词开头，后面不能紧接 or/ 或 /和/
+                if word.startswith("YES"):
+                    rest = word[3:].strip()
+                    # "YES or" / "YES 或" 是询问，跳过
+                    if rest.lower().startswith("or") or rest.startswith("OR") or rest.startswith("或"):
+                        continue
+                    found = True
+                    break
+                if word.startswith("NO"):
+                    rest = word[2:].strip()
+                    if rest.lower().startswith("or") or rest.startswith("OR") or rest.startswith("或"):
+                        continue
+                    found = False
+                    break
+            if found is not None:
+                return found, stdout[:300]
+            # 兜底：全文搜索，排除 "YES or NO" / "给 YES 或 NO" 等句式
+            import re
+            head = stdout[:500]
+            if re.search(r'\bYES\b(?!\s*(or|OR|或))', head):
+                return True, stdout[:300]
+            if re.search(r'\bNO\b(?!\s*(or|OR|或))', head):
+                return False, stdout[:300]
+            logger.warning(
+                f"[{run_info.run_id[:8]}] _evaluate_goal: cannot parse YES/NO, "
+                f"stdout_head={stdout[:150]}"
+            )
+            return True, f"eval: unclear (assume met), stdout_head={stdout[:150]}"
+        except Exception as e:
+            logger.warning(f"_evaluate_goal failed: {e}")
+            return True, f"eval exception: {e} (assume met)"
+
+    MAX_GOAL_RETRIES = 5
+
+    def set_goal(self, run_id: str, goal: str) -> bool:
+        """为此 run 设置 goal。"""
+        run_info = self.runs.get(run_id)
+        if not run_info:
+            return False
+        run_info.goal = goal
+        run_info.goal_retries = 0
+        logger.info(f"[{run_id[:8]}] set_goal: \"{goal}\"")
+        return True
+
+    def skip_goal(self, run_id: str) -> bool:
+        """停止该 run 的 goal 评估重试循环。"""
+        run_info = self.runs.get(run_id)
+        if not run_info:
+            return False
+        run_info.goal_retries = self.MAX_GOAL_RETRIES
+        logger.info(f"[{run_id[:8]}] skip_goal: goal retries set to {self.MAX_GOAL_RETRIES}, goal evaluation disabled")
+        return True
+
     def _on_run_completed(self, run_info: RunInfo) -> None:
-        """当一个 run 完成时，检查是否需要触发 resume。"""
+        """当一个 run 完成时，检查是否需要触发 resume。
+        若该 agent 有 goal 且 COMPLETED 但未达成，自动重启。"""
+        # 自动补齐 step goal：有 step_id 但无 goal 时，从 dag.json 查找
+        if not run_info.goal and run_info.step_id and run_info.workspace_path:
+            try:
+                dag = dp.load_dag(run_info.workspace_path)
+                for s in dag.get("steps", []):
+                    if s.get("id") == run_info.step_id:
+                        goal_from_dag = s.get("goal") or ""
+                        if goal_from_dag:
+                            run_info.goal = goal_from_dag
+                            logger.info(
+                                f"[{run_info.run_id[:8]}] Goal auto-filled from dag.json "
+                                f"for step {run_info.step_id}"
+                            )
+                        break
+            except Exception as e:
+                logger.debug(f"[{run_info.run_id[:8]}] Goal auto-fill failed: {e}")
+        
+        # === Goal 评估（仅对 generative agent 生效） ===
+        if (run_info.goal and not run_info.interactive
+                and run_info.status == RunStatus.COMPLETED
+                and run_info.goal_retries < self.MAX_GOAL_RETRIES):
+            run_info.goal_retries += 1
+            is_met, reason = self._evaluate_goal(run_info)
+            if not is_met:
+                logger.info(
+                    f"[{run_info.run_id[:8]}] Goal NOT met (retry {run_info.goal_retries}/{self.MAX_GOAL_RETRIES}): {reason}"
+                )
+                run_info.add_text_line(
+                    f"[Agent OS] Goal not met ({run_info.goal_retries}/{self.MAX_GOAL_RETRIES}): {reason}",
+                    kind="system",
+                )
+                feedback = (
+                    f"Your previous attempt did NOT achieve the goal.\n"
+                    f"Goal: {run_info.goal}\n"
+                    f"Evaluation reason: {reason}\n\n"
+                    f"Please fix the issues and try again. This is retry "
+                    f"{run_info.goal_retries}/{self.MAX_GOAL_RETRIES}."
+                )
+                self.continue_run(run_info.run_id, feedback, source="os")
+                self._mark_dirty()
+                return  # 不触发 spawn resolution，等下一次完成
+            else:
+                if "assume met" in reason or "exception" in reason:
+                    logger.info(f"[{run_info.run_id[:8]}] Goal eval: {reason}")
+                else:
+                    logger.info(f"[{run_info.run_id[:8]}] Goal MET: {reason}")
+                    run_info.add_text_line(f"[Agent OS] Goal met: {reason}", kind="system")
+                # goal 达成后自动清理，下次需要用户重新设置
+                run_info.goal_retries = self.MAX_GOAL_RETRIES
+                run_info.goal = None
+
         # 找到所有关联的 spawn 请求
+        matched_spawn = False
         for spawn_req in self.spawn_requests.values():
             if spawn_req.is_resolved:
                 continue
             if run_info.run_id in spawn_req.child_run_ids:
+                matched_spawn = True
                 spawn_req.completed_children.add(run_info.run_id)
                 self._check_spawn_resolution(spawn_req)
+        if not matched_spawn:
+            logger.debug(
+                f"[{run_info.run_id[:8]}] _on_run_completed: not found in any active spawn request "
+                f"(spawn_requests={len(self.spawn_requests)})"
+            )
 
     def _check_spawn_resolution(self, spawn_req: SpawnRequest) -> None:
         """检查 spawn 请求是否满足 resume 条件。"""
@@ -1782,7 +2181,9 @@ class ProcessManager:
                 parts.append("")
                 continue
 
-            task_desc = self._unwrap_task_prompt(child.prompt)[:100]
+            task_desc = self._unwrap_task_prompt(
+                child.prompt, child.system_prompt or "",
+            )[:100]
             parts.append(f"子任务 {i}：{task_desc}")
 
             if child.messages:
@@ -1936,73 +2337,34 @@ class ProcessManager:
                     env[k] = v
         return env
 
-    def _wrap_child_prompt(self, user_task: str, task_type: str = "generative",
-                            workspace_path: str | None = None) -> str:
-        """
-        给子 agent 的用户 prompt 外包一层强制通信协议。
-        generative: 告知 send.py + report.py，引导自行调用 report.py 结束。
-        interactive: 只告知 send.py，report.py 完全去除，用户点 Done 才结束。
-        workspace_path: 可选的 workspace 绝对路径，用于在 prompt 中告知 agent workspace 位置。
-        """
-        # 清除 surrogate 字符，避免传给子进程时乱码
-        user_task = user_task.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
-
-        # 从 workspace 路径提取任务名（最后一段目录名）
-        ws_name = ""
-        if workspace_path:
-            ws_name = os.path.basename(workspace_path.rstrip("/\\"))
-            ws_rel = os.path.join(".agent_os", "workspaces", ws_name)
-        else:
-            ws_rel = ".agent_os/workspaces/<任务名>/"
-
-        if task_type == "interactive":
-            header = (
-                "[Agent OS Communication Protocol]\n"
-                "You are running in an isolated subprocess. Your normal text output is "
-                "NOT visible to the parent agent. You communicate with the parent via:\n"
-                "  - python .agent_os/send.py --msg \"...\"     (send progress to parent)\n\n"
-                "IMPORTANT - Workspace:\n"
-                f"  Your shared workspace is at: {ws_rel}  #AOS_WS\n"
-                "  All files you create/read should be placed in the workspace directory.\n"
-                "  Use the workspace path directly or cd to it.\n\n"
-                "IMPORTANT - Completion:\n"
-                "  This is an INTERACTIVE task. Do NOT call report.py. "
-                "The user will click Done in the dashboard when satisfied.\n"
-                "[/Agent OS Communication Protocol]\n\n"
-                "[Your Task]\n"
-            )
-        else:
-            header = (
-                "[Agent OS Communication Protocol]\n"
-                "You are running in an isolated subprocess. Your normal text output is "
-                "NOT visible to the parent agent. You communicate with the parent via:\n"
-                "  - python .agent_os/send.py --msg \"...\"     (intermediate progress)\n"
-                "  - python .agent_os/report.py --result \"...\"  (signal task completion)\n\n"
-                "IMPORTANT - Workspace:\n"
-                f"  Your shared workspace is at: {ws_rel}  #AOS_WS\n"
-                "  All files you create/read should be placed in the workspace directory.\n"
-                "  Use the workspace path directly or cd to it.\n\n"
-                "When to call report.py:\n"
-                "  - If your task is AUTOMATED (no ongoing user interaction needed): "
-                "call report.py EXACTLY ONCE as your very last action.\n"
-                "[/Agent OS Communication Protocol]\n\n"
-                "[Your Task]\n"
-            )
-        footer = "\n[/Your Task]"
-
-        return header + user_task + footer
-
     @staticmethod
-    def _build_subagent_system_prompt(task_type: str = "generative") -> str:
+    def _build_subagent_system_prompt(task_type: str = "generative",
+                                       task_prompt: str = "",
+                                       workspace_path: str | None = None) -> str:
         """
         生成注入到子 agent 的 system prompt。
         generative: 引导 agent 自行调用 report.py 结束。
         interactive: 不提及 report.py，用户点 Done 才结束。
+        任务指令作为 ## Task 段直接合入 system prompt，确保优先级稳定。
         """
+        # 计算 workspace 相对路径
+        ws_rel = ".agent_os/workspaces/<任务名>/"
+        if workspace_path:
+            import os
+            ws_name = os.path.basename(workspace_path.rstrip("/\\"))
+            ws_rel = f".agent_os/workspaces/{ws_name}"
+
+        # 清除 surrogate 字符
+        task_prompt = task_prompt.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
         if task_type == "interactive":
-            return (
+            base = (
                 "You are a sub-agent launched by an orchestrator (parent agent) "
                 "running under Agent OS.\n\n"
+                "## Workspace\n\n"
+                f"Your shared workspace is at: {ws_rel}\n"
+                "This is the **persistent file memory** for the entire task — "
+                "all agents in this pipeline read and write to this same directory. "
+                "Files you create here will be accessible to downstream agents.\n\n"
                 "## Communication\n\n"
                 "Your normal response text is **NOT visible** to the parent. Use:\n\n"
                 "- `python .agent_os/send.py --msg \"...\"` — send intermediate progress (parent stays asleep)\n\n"
@@ -2011,18 +2373,26 @@ class ProcessManager:
                 "Do NOT call `report.py`. The user will click Done in the dashboard "
                 "when they are satisfied. Use `send.py` freely throughout.\n"
             )
-        return (
-            "You are a sub-agent launched by an orchestrator (parent agent) "
-            "running under Agent OS.\n\n"
-            "## Communication\n\n"
-            "Your normal response text is **NOT visible** to the parent. Use these scripts:\n\n"
-            "- `python .agent_os/send.py --msg \"...\"` — send intermediate progress (parent stays asleep)\n"
-            "- `python .agent_os/report.py --result \"...\"` — signal task completion (wakes the parent)\n\n"
-            "## When to call report.py\n\n"
-            "**Automated task** (no ongoing user interaction): call `report.py` EXACTLY ONCE "
-            "as your very last action with a concise summary.\n\n"
-            "The task prompt will indicate which type applies.\n"
-        )
+        else:
+            base = (
+                "You are a sub-agent launched by an orchestrator (parent agent) "
+                "running under Agent OS.\n\n"
+                "## Workspace\n\n"
+                f"Your shared workspace is at: {ws_rel}\n"
+                "This is the **persistent file memory** for the entire task — "
+                "all agents in this pipeline read and write to this same directory. "
+                "Files you create here will be accessible to downstream agents.\n\n"
+                "## Communication\n\n"
+                "Your normal response text is **NOT visible** to the parent. Use these scripts:\n\n"
+                "- `python .agent_os/send.py --msg \"...\"` — send intermediate progress (parent stays asleep)\n"
+                "- `python .agent_os/report.py --result \"...\"` — signal task completion (wakes the parent)\n\n"
+                "## When to call report.py\n\n"
+                "**Automated task** (no ongoing user interaction): call `report.py` EXACTLY ONCE "
+                "as your very last action with a concise summary.\n"
+            )
+        if task_prompt:
+            base += f"\n## Task\n{task_prompt}\n"
+        return base
 
     def _start_reader(self, run_info: RunInfo) -> None:
         """启动后台读取线程。"""

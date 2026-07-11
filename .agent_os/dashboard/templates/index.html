@@ -162,6 +162,11 @@
                             <option value="">Default</option>
                         </select>
                     </label>
+                    <label class="goal-picker" id="goalPicker">
+                        <input type="checkbox" id="goalCheck" onchange="onGoalToggle()">
+                        <span class="goal-picker-label">Goal</span>
+                        <input class="goal-input" id="goalInput" placeholder="e.g. test-cases.md generated..." onblur="onGoalBlur()" onkeydown="if(event.key==='Enter')event.target.blur()">
+                    </label>
                     <span class="input-hint"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> send</span>
                 </div>
             </div>
@@ -437,12 +442,20 @@ async function send() {
     document.getElementById('promptInput').value = '';
 }
 
+function getGoal() {
+    const check = document.getElementById('goalCheck');
+    if (!check || !check.checked) return null;
+    const input = document.getElementById('goalInput');
+    return (input && input.value.trim()) || null;
+}
+
 async function startNew(prompt) {
     const model = document.getElementById('modelSelect').value || null;
+    const goal = getGoal();
     const resp = await fetch('/api/run', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({prompt, model})
+        body: JSON.stringify({prompt, model, goal})
     });
     const data = await resp.json();
     if (data.error) { alert(data.error); return; }
@@ -459,10 +472,11 @@ async function startNew(prompt) {
 
 async function continueChat(prompt) {
     const model = document.getElementById('modelSelect').value || null;
+    const goal = getGoal();
     const resp = await fetch(`/api/run/${currentRunId}/continue`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({prompt, model})
+        body: JSON.stringify({prompt, model, goal})
     });
     const data = await resp.json();
     if (data.error) { alert(data.error); return; }
@@ -1043,6 +1057,50 @@ async function updateSessionInfo() {
     if (data.children_run_ids && data.children_run_ids.length > 0) parts.push(`${data.children_run_ids.length} children`);
     info.textContent = parts.join(' · ');
     meta.textContent = parts.join(' · ');
+    // Goal picker (next to Model)
+    const picker = document.getElementById('goalPicker');
+    const check = document.getElementById('goalCheck');
+    const input = document.getElementById('goalInput');
+    const goalText = data.goal || '';
+    _goalUpdating = true;  // 防止 onchange 触发 API 调用
+    if (goalText) {
+        check.checked = true;
+        input.value = goalText;
+        input.style.display = '';
+    } else {
+        check.checked = false;
+        input.value = '';
+        input.style.display = 'none';
+    }
+    _goalUpdating = false;
+}
+
+let _goalUpdating = false;  // 程序更新 checkbox 时不触发 API
+
+async function onGoalToggle() {
+    if (_goalUpdating) return;
+    const check = document.getElementById('goalCheck');
+    const input = document.getElementById('goalInput');
+    input.style.display = check.checked ? '' : 'none';
+    if (check.checked) {
+        input.focus();
+    } else if (currentRunId) {
+        await fetch('/api/run/' + currentRunId + '/set-goal', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({goal: ''})
+        });
+    }
+}
+
+async function onGoalBlur() {
+    if (_goalUpdating) return;
+    const input = document.getElementById('goalInput');
+    const goal = input.value.trim();
+    if (!currentRunId) return;
+    await fetch('/api/run/' + currentRunId + '/set-goal', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({goal})
+    });
 }
 
 async function refreshTree(workspaceId) {
@@ -1177,7 +1235,7 @@ function renderTree(nodes, depth) {
         const modelBadge = node.model ? `<span class="tree-badge tree-badge-model">${escapeHtml(node.model)}</span>` : '';
         const typeBadge = (node.task_type === 'interactive')
             ? '<span class="tree-badge tree-badge-interactive">interactive</span>'
-            : (node.is_root ? '' : '<span class="tree-badge tree-badge-gen">gen</span>');
+            : (node.is_root ? '' : `<span class="tree-badge tree-badge-${escapeHtml(node.task_type || 'gen')}">${escapeHtml(node.task_type || 'gen')}</span>`);
 
         const canDone = node.status === 'running' && !node.is_root;
         const doneLabel = node.task_type === 'interactive' ? 'Done' : 'Force end';
@@ -1216,8 +1274,9 @@ function renderTree(nodes, depth) {
         html += `<button class="tree-btn-icon tree-btn-del" title="Delete" onclick="event.stopPropagation();deleteRun('${node.run_id}')">✕</button>`;
         html += `</span>`;
         html += `</div>`;
-        if (modelBadge || typeBadge) {
-            html += `<div class="tree-node-badges">${typeBadge}${modelBadge}</div>`;
+        const goalBadge = node.goal ? `<span class="tree-badge tree-badge-goal" title="Goal: ${escapeHtml(node.goal)}">goal</span>` : '';
+        if (modelBadge || typeBadge || goalBadge) {
+            html += `<div class="tree-node-badges">${typeBadge}${modelBadge}${goalBadge}</div>`;
         }
         // WAITING 节点的进度条（直观展示子任务完成度）
         if (childSummary && (node.status === 'waiting' || (childSummary.running > 0 && hasChildren))) {

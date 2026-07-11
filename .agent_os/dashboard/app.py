@@ -2,6 +2,7 @@
 import os
 import re
 import json
+import subprocess
 from pathlib import Path
 from typing import List
 
@@ -23,6 +24,20 @@ templates = Jinja2Templates(directory=DASHBOARD_DIR / "templates")
 pm: ProcessManager | None = None
 
 
+def _safe_run(cmd, **kwargs):
+    """subprocess.run with utf-8 encoding by default for text=True calls.
+
+    Windows 上 subprocess 默认使用 GBK/cp936 编码解码管道输出，
+    git/node 等工具的 UTF-8 中文输出会被 _readerthread 抛出
+    UnicodeDecodeError。此 wrapper 对 text=True 的调用自动追加
+    encoding=\"utf-8\" + errors=\"replace\"。
+    """
+    if kwargs.get("text") and "encoding" not in kwargs:
+        kwargs["encoding"] = "utf-8"
+        kwargs.setdefault("errors", "replace")
+    return _safe_run(cmd, **kwargs)
+
+
 def set_process_manager(process_manager: ProcessManager):
     global pm
     pm = process_manager
@@ -36,11 +51,13 @@ class RunRequest(BaseModel):
     model: str | None = None
     workspace_name: str | None = None
     system_prompt: str | None = None
+    goal: str | None = None
 
 
 class ContinueRequest(BaseModel):
     prompt: str
     model: str | None = None
+    goal: str | None = None
 
 
 class DagStartRequest(BaseModel):
@@ -96,7 +113,7 @@ async def start_run(req: RunRequest):
     try:
         run_id = pm.start_run(prompt=req.prompt, agent_name=req.agent_name,
                               model=req.model, workspace_name=req.workspace_name,
-                              system_prompt=req.system_prompt)
+                              system_prompt=req.system_prompt, goal=req.goal)
         return JSONResponse({"run_id": run_id})
     except FileNotFoundError:
         return JSONResponse(
@@ -175,7 +192,7 @@ def _get_git_branches(git_dir: Path, task_name: str | None = None) -> list:
     if not (git_dir / ".git").is_dir():
         return []
     try:
-        result = subprocess.run(
+        result = _safe_run(
             ["git", "branch", "--format", "%(refname:short)"],
             cwd=str(git_dir), capture_output=True, text=True, timeout=10
         )
@@ -198,7 +215,7 @@ def _get_git_branches(git_dir: Path, task_name: str | None = None) -> list:
         info = {"name": name, "display": None, "sha": None, "is_base": is_base}
         try:
             # 获取该分支的 HEAD commit
-            r = subprocess.run(
+            r = _safe_run(
                 ["git", "rev-parse", "--short=8", name],
                 cwd=str(git_dir), capture_output=True, text=True, timeout=10
             )
@@ -209,7 +226,7 @@ def _get_git_branches(git_dir: Path, task_name: str | None = None) -> list:
             # 只查找 commit message 中 ws_id 匹配当前 task_name 的 agent commit
             # 这样可以排除从祖先分支（如 master）继承的无关 commit
             import re
-            r = subprocess.run(
+            r = _safe_run(
                 ["git", "log", name, "-F", "--grep=[agent:",
                  "--format=%H%x1f%s", "-n", "50"],
                 cwd=str(git_dir), capture_output=True, text=True, timeout=10
@@ -250,7 +267,7 @@ def _get_current_branch(git_dir: Path) -> str:
     if not (git_dir / ".git").is_dir():
         return ""
     try:
-        result = subprocess.run(
+        result = _safe_run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
             cwd=str(git_dir), capture_output=True, text=True, timeout=10
         )
@@ -286,9 +303,6 @@ def _list_workspace_files(run_id: str) -> list[str]:
         if not p.is_file():
             continue
         rel = p.relative_to(workspace_dir)
-        # 过滤 runs/ 目录下的文件（元数据，不是产出）
-        if rel.parts and rel.parts[0] == "runs":
-            continue
         files.append(str(rel).replace("\\", "/"))
     return files
 
@@ -325,6 +339,9 @@ async def get_run(run_id: str):
             "user_terminated": run_info.user_terminated,
             "workspace_files": _list_workspace_files(run_id),
             "system_prompt": run_info.system_prompt,
+            "goal": run_info.goal,
+            "goal_retries": run_info.goal_retries,
+            "max_goal_retries": pm.MAX_GOAL_RETRIES,
         })
     except Exception as e:
         import traceback
@@ -348,7 +365,7 @@ async def list_workspace(run_id: str):
     current_branch = _get_current_branch(git_base)
     
     # 这些目录/文件名是 git 自身产物或元数据，对 workspace 用户没价值
-    SKIP_DIRS = {".git", "runs"}
+    SKIP_DIRS = {".git"}
     SKIP_FILES = {".gitignore", ".gitattributes", ".gitmodules", ".gitkeep"}
     files = []
     for p in sorted(workspace_dir.rglob("*")):
@@ -413,7 +430,7 @@ def _git_checkout_with_stash(git_base: Path, branch: str, create: bool = False) 
     wdir = str(git_base)
     
     def _git(cmd, timeout=10):
-        return subprocess.run(cmd, cwd=wdir, capture_output=True, text=True, timeout=timeout)
+        return _safe_run(cmd, cwd=wdir, capture_output=True, text=True, timeout=timeout)
     
     try:
         # 先尝试直接切换
@@ -483,7 +500,7 @@ async def create_branch(run_id: str, req: SwitchBranchRequest):
     wdir = str(git_base)
     
     # 检查分支是否已存在
-    r = subprocess.run(
+    r = _safe_run(
         ["git", "rev-parse", "--verify", branch],
         cwd=wdir, capture_output=True, timeout=10
     )
@@ -511,7 +528,7 @@ async def delete_branch(branch_name: str):
     wdir = str(git_dir)
 
     # 检查分支是否存在
-    r = subprocess.run(
+    r = _safe_run(
         ["git", "rev-parse", "--verify", branch_name],
         cwd=wdir, capture_output=True, timeout=10
     )
@@ -524,7 +541,7 @@ async def delete_branch(branch_name: str):
         return JSONResponse({"ok": False, "error": "不能删除当前所在分支，请先切换到其他分支"}, status_code=400)
 
     try:
-        result = subprocess.run(
+        result = _safe_run(
             ["git", "branch", "-D", branch_name],
             cwd=wdir, capture_output=True, text=True, timeout=10
         )
@@ -548,13 +565,40 @@ async def continue_run(run_id: str, req: ContinueRequest):
         return JSONResponse({"error": "no session_id, cannot continue"}, status_code=400)
 
     try:
-        success = pm.continue_run(run_id, prompt=req.prompt, model=req.model)
+        success = pm.continue_run(run_id, prompt=req.prompt, model=req.model, goal=req.goal)
         if success:
             return JSONResponse({"ok": True, "run_id": run_id})
         else:
             return JSONResponse({"error": "cannot continue"}, status_code=400)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/run/{run_id}/set-goal")
+async def set_goal(run_id: str, req: Request):
+    """Set a goal for this run."""
+    if not pm:
+        return JSONResponse({"error": "not initialized"}, status_code=500)
+    try:
+        body = await req.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    goal = body.get("goal", "")
+    ok = pm.set_goal(run_id, goal)
+    if ok:
+        return JSONResponse({"ok": True})
+    return JSONResponse({"error": "run not found"}, status_code=404)
+
+
+@app.post("/api/run/{run_id}/skip-goal")
+async def skip_goal(run_id: str):
+    """Stop goal evaluation retries for this run."""
+    if not pm:
+        return JSONResponse({"error": "not initialized"}, status_code=500)
+    ok = pm.skip_goal(run_id)
+    if ok:
+        return JSONResponse({"ok": True})
+    return JSONResponse({"error": "run not found"}, status_code=404)
 
 
 @app.post("/api/run/{run_id}/stop")
@@ -703,16 +747,9 @@ async def start_dag(req: DagStartRequest):
 
         dag = {"steps": []}
         for s in steps:
-            dag["steps"].append({
-                "id": s["id"],
-                "name": s.get("name", s["id"]),
-                "prompt": s.get("prompt", ""),
-                "depends_on": s.get("depends_on", []),
-                "agent_name": s.get("agent_name"),
-                "model": s.get("model"),
-                "type": s.get("type", "generative"),
-                "status": "pending",
-            })
+            step = dict(s)  # 全量复制模板内容
+            step["status"] = "pending"
+            dag["steps"].append(step)
 
         dag_file = ws_dir / "dag.json"
         dag_file.write_text(json.dumps(dag, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -837,19 +874,19 @@ def _commit_diff(sha: str, ws: str, is_range: bool = False) -> dict:
     import subprocess as _sp
     try:
         if is_range:
-            r = _sp.run(["git", "diff", sha], cwd=ws,
+            r = _safe_run(["git", "diff", sha], cwd=ws,
                         capture_output=True, text=True, timeout=15)
         else:
             # 先检查是否有父 commit，没有则用 git show（root commit）
-            parent = _sp.run(
+            parent = _safe_run(
                 ["git", "rev-parse", f"{sha}~1"],
                 cwd=ws, capture_output=True, text=True, timeout=10
             )
             if parent.returncode == 0 and parent.stdout.strip():
-                r = _sp.run(["git", "diff", f"{sha}~1", sha], cwd=ws,
+                r = _safe_run(["git", "diff", f"{sha}~1", sha], cwd=ws,
                             capture_output=True, text=True, timeout=15)
             else:
-                r = _sp.run(["git", "show", "--format=", sha], cwd=ws,
+                r = _safe_run(["git", "show", "--format=", sha], cwd=ws,
                             capture_output=True, text=True, timeout=15)
         diff = r.stdout.strip()
         files = []
@@ -1102,14 +1139,14 @@ async def delete_workspace(req: dict):
             current = _get_current_branch(git_dir)
             if branch_name == current:
                 try:
-                    subprocess.run(
+                    _safe_run(
                         ["git", "checkout", "master"],
                         cwd=str(git_dir), capture_output=True, timeout=10
                     )
                 except Exception:
                     pass
             try:
-                r = subprocess.run(
+                r = _safe_run(
                     ["git", "branch", "-D", branch_name],
                     cwd=str(git_dir), capture_output=True, text=True, timeout=10
                 )
@@ -1128,10 +1165,10 @@ async def delete_workspace(req: dict):
             wp_resolved = wp_path.resolve()
             if WORKSPACES_DIR.resolve() in wp_resolved.parents and wp_path.exists():
                 if _pf.system() == "Windows":
-                    _sp.run(["cmd", "/c", "rd", "/s", "/q", str(wp_path)],
+                    _safe_run(["cmd", "/c", "rd", "/s", "/q", str(wp_path)],
                             capture_output=True, timeout=30)
                 else:
-                    _sp.run(["rm", "-rf", str(wp_path)],
+                    _safe_run(["rm", "-rf", str(wp_path)],
                             capture_output=True, timeout=30)
                 purged.append(str(wp_path))
         except Exception:
@@ -1451,7 +1488,7 @@ async def get_recording_diff(workspace_id: str, run_id: str):
     commit_msg = f"[{run_id[:8]}]"
     try:
         # 找到该 run 对应的 commit hash
-        r = _sp.run(
+        r = _safe_run(
             ["git", "log", "--oneline", "--grep", commit_msg, "-n", "1"],
             cwd=str(ws_dir), capture_output=True, text=True, timeout=10
         )
@@ -1461,20 +1498,20 @@ async def get_recording_diff(workspace_id: str, run_id: str):
         commit_hash = r.stdout.strip().split()[0]
         
         # 获取该 commit 引入的变更（相对于它的父 commit，首 commit 用 show）
-        r2 = _sp.run(
+        r2 = _safe_run(
             ["git", "diff", f"{commit_hash}~1", commit_hash],
             cwd=str(ws_dir), capture_output=True, text=True, timeout=10
         )
         diff_text = r2.stdout.strip()
         if not diff_text:
             # 首 commit 没有父节点，用 git show
-            r2 = _sp.run(
+            r2 = _safe_run(
                 ["git", "show", "--format=", commit_hash],
                 cwd=str(ws_dir), capture_output=True, text=True, timeout=10
             )
             diff_text = r2.stdout.strip()
         # 同时获取变更文件列表
-        r3 = _sp.run(
+        r3 = _safe_run(
             ["git", "diff-tree", "--no-commit-id", "--name-only", "-r", commit_hash],
             cwd=str(ws_dir), capture_output=True, text=True, timeout=10
         )
@@ -1511,7 +1548,7 @@ async def dag_steps(workspace_id: str):
                             status_code=404)
     try:
         # 用 -F 让 --grep 按字面量匹配 "[step:"（方括号在 basic-regex 里是元字符）
-        r = _sp.run(
+        r = _safe_run(
             ["git", "log", "-F", "--grep", "[step:",
              "--format=%H%x09%ct%x09%s"],
             cwd=str(ws_dir), capture_output=True, text=True, timeout=10,
@@ -1575,11 +1612,11 @@ async def dag_checkout_step(workspace_id: str, step_id: str):
     if affected > 0 and project_root:
         try:
             dag_path_rel = os.path.relpath(str(dag_file), project_root).replace("\\", "/")
-            _sp.run(
+            _safe_run(
                 ["git", "add", dag_path_rel],
                 cwd=project_root, capture_output=True, timeout=10
             )
-            _sp.run(
+            _safe_run(
                 ["git", "commit", "-m",
                  f"[checkout:{workspace_id}:{step_id}] reset {affected} step(s) to pending"],
                 cwd=project_root, capture_output=True, timeout=15
