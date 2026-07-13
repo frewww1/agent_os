@@ -205,6 +205,7 @@ const STATUS_LABEL = {
     failed: 'Failed',
     stopped: 'Stopped',
     waiting: 'Waiting on children',
+    plan_pending: 'Awaiting plan approval',
 };
 
 document.getElementById('promptInput').addEventListener('keydown', (e) => {
@@ -553,6 +554,10 @@ async function viewRun(runId) {
         connectStream(runId);
         setStatus('running', STATUS_LABEL.running);
         document.getElementById('stopBtn').style.display = '';
+    } else if (data.status === 'plan_pending') {
+        setStatus('plan_pending', STATUS_LABEL.plan_pending);
+        document.getElementById('stopBtn').style.display = 'none';
+        showPlanApproval(runId, data.plan_content, data.plan_file);
     } else {
         setStatus(data.status, STATUS_LABEL[data.status] || data.status);
         document.getElementById('stopBtn').style.display = 'none';
@@ -617,6 +622,7 @@ function renderEvent(ev) {
     if (k === 'user_done') return renderUserDone(ev);
     if (k === 'error') return renderError(ev);
     if (k === 'system') return renderSystem(ev);
+    if (k === 'plan_pending') return renderPlanPending(ev);
     if (k === 'raw') return renderRaw(ev);
     return renderRaw(ev);
 }
@@ -1033,6 +1039,120 @@ function renderRaw(ev) {
     return pre;
 }
 
+function renderPlanPending(ev) {
+    // 在流式输出中遇到 plan_pending 事件时，立刻弹出审批 UI
+    const wrap = el('div', 'msg msg-plan-pending');
+    const title = el('div', 'plan-pending-title', '📋 Plan ready — awaiting approval');
+    wrap.appendChild(title);
+    if (ev.allowed_prompts && ev.allowed_prompts.length > 0) {
+        const sub = el('div', 'plan-pending-allowed', `Allowed actions: ${ev.allowed_prompts.length}`);
+        wrap.appendChild(sub);
+    }
+    // 触发审批面板（如果是实时 SSE）
+    setTimeout(() => {
+        if (currentRunId) {
+            fetch(`/api/run/${currentRunId}`)
+                .then(r => r.json())
+                .then(d => {
+                    if (d.status === 'plan_pending') {
+                        setStatus('plan_pending', STATUS_LABEL.plan_pending);
+                        document.getElementById('stopBtn').style.display = 'none';
+                        showPlanApproval(currentRunId, d.plan_content, d.plan_file);
+                    }
+                }).catch(() => {});
+        }
+    }, 300);
+    return wrap;
+}
+
+function showPlanApproval(runId, planContent, planFile) {
+    // 移除已有的审批面板（避免重复）
+    document.querySelectorAll('.plan-approval-panel').forEach(e => e.remove());
+
+    const panel = document.createElement('div');
+    panel.className = 'plan-approval-panel';
+
+    const header = el('div', 'plan-approval-header');
+    header.innerHTML = `<span class="plan-approval-icon">📋</span><strong>Plan Approval Required</strong>`;
+    if (planFile) {
+        const fname = planFile.split(/[/\\]/).pop();
+        header.innerHTML += `<span class="plan-approval-file">${escapeHtml(fname)}</span>`;
+    }
+    panel.appendChild(header);
+
+    if (planContent) {
+        const planBody = document.createElement('div');
+        planBody.className = 'plan-approval-body';
+        setMarkdownBody(planBody, planContent);
+        panel.appendChild(planBody);
+    }
+
+    const feedbackRow = el('div', 'plan-approval-feedback-row');
+    const feedbackInput = document.createElement('input');
+    feedbackInput.type = 'text';
+    feedbackInput.className = 'plan-approval-feedback';
+    feedbackInput.placeholder = 'Optional feedback (leave blank to use default message)';
+    feedbackRow.appendChild(feedbackInput);
+    panel.appendChild(feedbackRow);
+
+    const btnRow = el('div', 'plan-approval-btns');
+
+    const approveBtn = document.createElement('button');
+    approveBtn.className = 'btn-approve';
+    approveBtn.textContent = '✅ Approve';
+    approveBtn.onclick = () => approvePlan(runId, feedbackInput.value);
+
+    const rejectBtn = document.createElement('button');
+    rejectBtn.className = 'btn-reject';
+    rejectBtn.textContent = '❌ Reject';
+    rejectBtn.onclick = () => rejectPlan(runId, feedbackInput.value);
+
+    btnRow.appendChild(approveBtn);
+    btnRow.appendChild(rejectBtn);
+    panel.appendChild(btnRow);
+
+    // 插入到 outputArea 末尾（SSE stream 下方）
+    const outputArea = document.getElementById('outputArea');
+    outputArea.appendChild(panel);
+    panel.scrollIntoView({ behavior: 'smooth', block: 'end' });
+}
+
+async function approvePlan(runId, feedback) {
+    const panel = document.querySelector('.plan-approval-panel');
+    if (panel) panel.remove();
+    const resp = await fetch(`/api/run/${runId}/plan/approve`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ feedback: feedback || '' }),
+    });
+    const data = await resp.json();
+    if (data.ok) {
+        setStatus('running', STATUS_LABEL.running);
+        document.getElementById('stopBtn').style.display = '';
+        connectStream(runId);
+    } else {
+        alert('Approve failed: ' + (data.error || 'unknown'));
+    }
+}
+
+async function rejectPlan(runId, feedback) {
+    const panel = document.querySelector('.plan-approval-panel');
+    if (panel) panel.remove();
+    const resp = await fetch(`/api/run/${runId}/plan/reject`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ feedback: feedback || '' }),
+    });
+    const data = await resp.json();
+    if (data.ok) {
+        setStatus('running', STATUS_LABEL.running);
+        document.getElementById('stopBtn').style.display = '';
+        connectStream(runId);
+    } else {
+        alert('Reject failed: ' + (data.error || 'unknown'));
+    }
+}
+
 function stripProtocolWrap(text) {
     // 移除 OS 注入到子 agent 的协议头/尾包装，只保留 [Your Task] 中的内容
     const m = text.match(/\[Your Task\]\n?([\s\S]*?)\n?\[\/Your Task\]/);
@@ -1227,6 +1347,7 @@ function renderTree(nodes, depth) {
             failed: '<span class="ti failed"></span>',
             stopped: '<span class="ti stopped"></span>',
             waiting: '<span class="ti waiting"></span>',
+            plan_pending: '<span class="ti plan_pending" title="Awaiting plan approval">📋</span>',
         }[node.status] || '<span class="ti"></span>';
 
         // 优先用用户自定义 label，否则直接用后端已提取的 prompt
@@ -1270,6 +1391,9 @@ function renderTree(nodes, depth) {
         }
         if (canStop) {
             html += `<button class="tree-btn-icon tree-btn-stop" title="Stop" onclick="event.stopPropagation();stopRun('${node.run_id}')">■</button>`;
+        }
+        if (node.status === 'plan_pending') {
+            html += `<button class="tree-btn-done" style="background:#22c55e" onclick="event.stopPropagation();viewRun('${node.run_id}')">Review Plan</button>`;
         }
         html += `<button class="tree-btn-icon tree-btn-del" title="Delete" onclick="event.stopPropagation();deleteRun('${node.run_id}')">✕</button>`;
         html += `</span>`;

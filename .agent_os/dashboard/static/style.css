@@ -1319,6 +1319,90 @@ details[open] > summary.tool-head { border-bottom: 1px solid var(--line); }
     word-break: break-word;
 }
 
+/* ========== Plan pending inline event ========== */
+.msg-plan-pending {
+    padding: 8px 14px;
+    border-left: 3px solid #f59e0b;
+    background: rgba(245,158,11,0.07);
+    border-radius: 6px;
+    color: #f59e0b;
+    font-size: 13px;
+    font-weight: 500;
+}
+.plan-pending-title { font-weight: 600; }
+.plan-pending-allowed { font-size: 11px; opacity: 0.7; margin-top: 2px; }
+
+/* ========== Plan approval panel ========== */
+.plan-approval-panel {
+    margin: 16px 0 8px;
+    border: 1.5px solid #f59e0b;
+    border-radius: 10px;
+    background: var(--bg-elev-1);
+    overflow: hidden;
+}
+.plan-approval-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 16px;
+    background: rgba(245,158,11,0.12);
+    border-bottom: 1px solid rgba(245,158,11,0.25);
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
+}
+.plan-approval-icon { font-size: 18px; }
+.plan-approval-file {
+    margin-left: auto;
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--text-3);
+    font-family: monospace;
+}
+.plan-approval-body {
+    padding: 14px 16px;
+    max-height: 420px;
+    overflow-y: auto;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--text-1);
+    border-bottom: 1px solid var(--line);
+}
+.plan-approval-feedback-row {
+    padding: 10px 16px 6px;
+}
+.plan-approval-feedback {
+    width: 100%;
+    box-sizing: border-box;
+    background: var(--bg-elev-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 6px 10px;
+    font-size: 13px;
+    outline: none;
+}
+.plan-approval-feedback:focus { border-color: #f59e0b; }
+.plan-approval-btns {
+    display: flex;
+    gap: 10px;
+    padding: 10px 16px 14px;
+}
+.btn-approve, .btn-reject {
+    flex: 1;
+    padding: 8px 0;
+    border-radius: 7px;
+    border: none;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    transition: opacity 0.15s;
+}
+.btn-approve { background: #22c55e; color: #fff; }
+.btn-approve:hover { opacity: 0.85; }
+.btn-reject  { background: #ef4444; color: #fff; }
+.btn-reject:hover  { opacity: 0.85; }
+
 /* ========== Input area ========== */
 .input-area {
     padding: 12px 24px 16px;
@@ -1504,6 +1588,7 @@ button {
 .status-indicator.failed    { background: var(--err);    box-shadow: 0 0 10px var(--err); }
 .status-indicator.stopped   { background: var(--text-faint); }
 .status-indicator.waiting   { background: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
+.status-indicator.plan_pending { background: #f59e0b; animation: pulse 1.6s ease-in-out infinite; box-shadow: 0 0 10px #f59e0b; }
 
 #statusText { color: var(--text-1); font-weight: 500; }
 .session-info {

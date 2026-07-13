@@ -44,7 +44,8 @@ class RunStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     STOPPED = "stopped"
-    WAITING = "waiting"  # 主 agent 等待子 agent 完成
+    WAITING = "waiting"       # 主 agent 等待子 agent 完成
+    PLAN_PENDING = "plan_pending"  # agent 调用 ExitPlanMode，等待用户审批计划
 
 
 @dataclass
@@ -85,6 +86,9 @@ class RunInfo:
     _reader_thread: threading.Thread | None = field(default=None, repr=False)
     _new_output_event: asyncio.Event | None = field(default=None, repr=False)
     _loop: asyncio.AbstractEventLoop | None = field(default=None, repr=False)
+    # Plan mode 相关
+    plan_content: str | None = None       # ExitPlanMode 时写入的计划文件内容（用于前端展示）
+    plan_file: str | None = None          # 计划文件路径
 
     def add_event(self, kind: str, **payload) -> dict:
         """追加结构化事件（前端按 kind 渲染）。同时唤醒 SSE 流。"""
@@ -290,6 +294,8 @@ class ProcessManager:
             "system_prompt": ri.system_prompt,
             "goal": ri.goal,
             "goal_retries": ri.goal_retries,
+            "plan_content": ri.plan_content,
+            "plan_file": ri.plan_file,
         }
         return self._sanitize(raw)
 
@@ -408,6 +414,7 @@ class ProcessManager:
                         self._originally_waiting.add(rid)
                     if status_str in ("running", "waiting"):
                         status_str = "stopped"
+                    # plan_pending 保留：重启后用户仍需审批
                     ri = RunInfo(
                         run_id=rid,
                         prompt=r.get("prompt", ""),
@@ -430,6 +437,8 @@ class ProcessManager:
                         system_prompt=r.get("system_prompt"),
                         goal=r.get("goal"),
                         goal_retries=r.get("goal_retries", 0),
+                        plan_content=r.get("plan_content"),
+                        plan_file=r.get("plan_file"),
                     )
                     ri._fallback_result = r.get("fallback_result")
                     ri._event_seq = r.get("event_seq", 0)
@@ -1170,6 +1179,36 @@ class ProcessManager:
 
         self._mark_dirty()
         return True
+
+    @staticmethod
+    def _find_latest_plan_file() -> str | None:
+        """返回 ~/.codebuddy/plans/ 下最近修改的 .md 文件路径，找不到则 None。"""
+        import pathlib
+        plans_dir = pathlib.Path.home() / ".codebuddy" / "plans"
+        if not plans_dir.is_dir():
+            return None
+        mds = sorted(plans_dir.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+        return str(mds[0]) if mds else None
+
+    def approve_plan(self, run_id: str, feedback: str = "", model: str | None = None) -> bool:
+        """审批通过 plan — 向 agent 发送 approve 消息并恢复执行。"""
+        run_info = self.runs.get(run_id)
+        if not run_info or run_info.status != RunStatus.PLAN_PENDING:
+            return False
+        msg = feedback.strip() if feedback.strip() else "Approved. Please proceed with the implementation."
+        run_info.status = RunStatus.RUNNING
+        logger.info(f"[{run_id[:8]}] Plan approved: {msg[:60]}")
+        return self.continue_run(run_id, prompt=msg, source="user", model=model)
+
+    def reject_plan(self, run_id: str, feedback: str = "", model: str | None = None) -> bool:
+        """拒绝 plan — 向 agent 发送 reject 消息，agent 将修改计划。"""
+        run_info = self.runs.get(run_id)
+        if not run_info or run_info.status != RunStatus.PLAN_PENDING:
+            return False
+        msg = feedback.strip() if feedback.strip() else "Plan rejected. Please revise the approach."
+        run_info.status = RunStatus.RUNNING
+        logger.info(f"[{run_id[:8]}] Plan rejected: {msg[:60]}")
+        return self.continue_run(run_id, prompt=msg, source="user", model=model)
 
     def continue_run(self, run_id: str, prompt: str, source: str = "user",
                      model: str | None = None, goal: str | None = None) -> bool:
@@ -2437,6 +2476,20 @@ class ProcessManager:
                     elif kind == "tool_result":
                         for sub in ev.get("text", "").split("\n"):
                             run_info.output_lines.append(sub)
+                    elif kind == "plan_pending":
+                        # 进程将要退出，提前切换状态，让退出时跳过 COMPLETED 逻辑
+                        run_info.status = RunStatus.PLAN_PENDING
+                        run_info.output_lines.append("> [ExitPlanMode] Plan ready — awaiting approval")
+                        # 读取计划文件内容（如果存在）
+                        plan_file = self._find_latest_plan_file()
+                        if plan_file:
+                            run_info.plan_file = plan_file
+                            try:
+                                with open(plan_file, encoding="utf-8") as f:
+                                    run_info.plan_content = f.read()
+                            except Exception:
+                                pass
+                        logger.info(f"[{run_info.run_id[:8]}] Plan pending — waiting for user approval")
                     elif kind == "raw":
                         run_info.output_lines.append(ev.get("text", ""))
                     # 推结构化事件（自动唤醒 SSE）
@@ -2447,7 +2500,11 @@ class ProcessManager:
             run_info.exit_code = process.returncode
             logger.info(f"[{run_info.run_id[:8]}] Process exited: code={process.returncode}, status={run_info.status.value}, session_id={run_info.session_id is not None}, lines={line_count}")
 
-            if run_info.status == RunStatus.RUNNING:
+            if run_info.status == RunStatus.PLAN_PENDING:
+                # 计划等待审批：进程正常退出，保持 PLAN_PENDING，不标记 completed
+                logger.info(f"[{run_info.run_id[:8]}] Process exited in plan_pending — waiting for user approval")
+                self._mark_dirty()
+            elif run_info.status == RunStatus.RUNNING:
                 if run_info.interactive:
                     logger.debug(f"[{run_info.run_id[:8]}] Interactive - staying running")
                 else:
@@ -2629,6 +2686,12 @@ class ProcessManager:
                             # 透传 todos 列表给前端，便于渲染清单视图
                             if isinstance(todos, list):
                                 event["todos"] = todos
+                        elif tool_name == "ExitPlanMode":
+                            # 标记 plan_pending：进程即将退出，等待用户审批
+                            event["kind"] = "plan_pending"
+                            allowed_prompts = tool_input.get("allowedPrompts", [])
+                            event["summary"] = f"Plan ready — awaiting approval ({len(allowed_prompts)} allowed actions)"
+                            event["allowed_prompts"] = allowed_prompts
                         else:
                             event["summary"] = _json.dumps(tool_input, ensure_ascii=False)[:200]
                         events.append(event)

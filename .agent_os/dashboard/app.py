@@ -574,6 +574,33 @@ async def continue_run(run_id: str, req: ContinueRequest):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+class PlanDecisionRequest(BaseModel):
+    feedback: str = ""
+    model: str | None = None
+
+
+@app.post("/api/run/{run_id}/plan/approve")
+async def approve_plan(run_id: str, req: PlanDecisionRequest):
+    """Approve the pending plan and resume execution."""
+    if not pm:
+        return JSONResponse({"error": "not initialized"}, status_code=500)
+    success = pm.approve_plan(run_id, feedback=req.feedback, model=req.model)
+    if success:
+        return JSONResponse({"ok": True, "run_id": run_id})
+    return JSONResponse({"error": "cannot approve — run not found or not in plan_pending state"}, status_code=400)
+
+
+@app.post("/api/run/{run_id}/plan/reject")
+async def reject_plan(run_id: str, req: PlanDecisionRequest):
+    """Reject the pending plan and ask agent to revise."""
+    if not pm:
+        return JSONResponse({"error": "not initialized"}, status_code=500)
+    success = pm.reject_plan(run_id, feedback=req.feedback, model=req.model)
+    if success:
+        return JSONResponse({"ok": True, "run_id": run_id})
+    return JSONResponse({"error": "cannot reject — run not found or not in plan_pending state"}, status_code=400)
+
+
 @app.post("/api/run/{run_id}/set-goal")
 async def set_goal(run_id: str, req: Request):
     """Set a goal for this run."""
