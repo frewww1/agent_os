@@ -30,7 +30,7 @@ def _safe_run(cmd, **kwargs):
     if kwargs.get("text") and "encoding" not in kwargs:
         kwargs["encoding"] = "utf-8"
         kwargs.setdefault("errors", "replace")
-    return _safe_run(cmd, **kwargs)
+    return subprocess.run(cmd, **kwargs)
 
 
 def _try_remove_lock(lock_file: str) -> None:

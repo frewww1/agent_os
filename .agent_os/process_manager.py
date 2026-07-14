@@ -1197,8 +1197,13 @@ class ProcessManager:
             return False
         msg = feedback.strip() if feedback.strip() else "Approved. Please proceed with the implementation."
         run_info.status = RunStatus.RUNNING
-        logger.info(f"[{run_id[:8]}] Plan approved: {msg[:60]}")
-        return self.continue_run(run_id, prompt=msg, source="user", model=model)
+        ok = self.continue_run(run_id, prompt=msg, source="user", model=model)
+        if ok:
+            logger.info(f"[{run_id[:8]}] Plan approved: {msg[:60]}")
+        else:
+            logger.warning(f"[{run_id[:8]}] Plan approved but continue_run failed")
+            run_info.status = RunStatus.PLAN_PENDING  # 回退状态
+        return ok
 
     def reject_plan(self, run_id: str, feedback: str = "", model: str | None = None) -> bool:
         """拒绝 plan — 向 agent 发送 reject 消息，agent 将修改计划。"""
@@ -1217,7 +1222,15 @@ class ProcessManager:
         if not run_info:
             return False
         if run_info._process and run_info._process.poll() is None:
-            return False
+            # plan_pending 时进程即将退出，terminate 它以便 continue
+            if run_info.status == RunStatus.PLAN_PENDING:
+                try:
+                    run_info._process.terminate()
+                    run_info._process.wait(timeout=5)
+                except Exception:
+                    pass
+            else:
+                return False
         if not run_info.session_id:
             return False
 
@@ -2477,7 +2490,7 @@ class ProcessManager:
                         for sub in ev.get("text", "").split("\n"):
                             run_info.output_lines.append(sub)
                     elif kind == "plan_pending":
-                        # 进程将要退出，提前切换状态，让退出时跳过 COMPLETED 逻辑
+                        # 进程将要退出，提前切换状态并 terminate，释放 _process 引用
                         run_info.status = RunStatus.PLAN_PENDING
                         run_info.output_lines.append("> [ExitPlanMode] Plan ready — awaiting approval")
                         # 读取计划文件内容（如果存在）
@@ -2489,11 +2502,20 @@ class ProcessManager:
                                     run_info.plan_content = f.read()
                             except Exception:
                                 pass
+                        # terminate 进程，让 approve 时 continue_run 不会因 _process 还在而失败
+                        if run_info._process and run_info._process.poll() is None:
+                            try:
+                                run_info._process.terminate()
+                                run_info._process.wait(timeout=3)
+                            except Exception:
+                                pass
                         logger.info(f"[{run_info.run_id[:8]}] Plan pending — waiting for user approval")
                     elif kind == "raw":
                         run_info.output_lines.append(ev.get("text", ""))
                     # 推结构化事件（自动唤醒 SSE）
                     payload = {k: v for k, v in ev.items() if k != "kind"}
+                    if kind == "plan_pending":
+                        payload["run_id"] = run_info.run_id
                     run_info.add_event(kind, **payload)
 
             process.wait()

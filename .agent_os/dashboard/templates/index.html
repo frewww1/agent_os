@@ -1049,15 +1049,17 @@ function renderPlanPending(ev) {
         wrap.appendChild(sub);
     }
     // 触发审批面板（如果是实时 SSE）
+    // 优先用事件里的 run_id，兜底用 currentRunId
+    const runId = ev.run_id || currentRunId;
     setTimeout(() => {
-        if (currentRunId) {
-            fetch(`/api/run/${currentRunId}`)
+        if (runId) {
+            fetch(`/api/run/${runId}`)
                 .then(r => r.json())
                 .then(d => {
                     if (d.status === 'plan_pending') {
                         setStatus('plan_pending', STATUS_LABEL.plan_pending);
                         document.getElementById('stopBtn').style.display = 'none';
-                        showPlanApproval(currentRunId, d.plan_content, d.plan_file);
+                        showPlanApproval(runId, d.plan_content, d.plan_file);
                     }
                 }).catch(() => {});
         }
@@ -1066,20 +1068,30 @@ function renderPlanPending(ev) {
 }
 
 function showPlanApproval(runId, planContent, planFile) {
-    // 移除已有的审批面板（避免重复）
     document.querySelectorAll('.plan-approval-panel').forEach(e => e.remove());
 
     const panel = document.createElement('div');
     panel.className = 'plan-approval-panel';
 
+    // 头部
     const header = el('div', 'plan-approval-header');
-    header.innerHTML = `<span class="plan-approval-icon">📋</span><strong>Plan Approval Required</strong>`;
+    const icon = el('span', 'plan-approval-icon', '📋');
+    const title = el('span', 'plan-approval-title', 'Plan Review');
+    header.appendChild(icon);
+    header.appendChild(title);
     if (planFile) {
         const fname = planFile.split(/[/\\]/).pop();
-        header.innerHTML += `<span class="plan-approval-file">${escapeHtml(fname)}</span>`;
+        header.appendChild(el('span', 'plan-approval-file', fname));
     }
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'plan-approval-close';
+    closeBtn.textContent = '✕';
+    closeBtn.title = 'Dismiss';
+    closeBtn.onclick = () => panel.remove();
+    header.appendChild(closeBtn);
     panel.appendChild(header);
 
+    // 计划内容
     if (planContent) {
         const planBody = document.createElement('div');
         planBody.className = 'plan-approval-body';
@@ -1087,45 +1099,78 @@ function showPlanApproval(runId, planContent, planFile) {
         panel.appendChild(planBody);
     }
 
-    const feedbackRow = el('div', 'plan-approval-feedback-row');
+    // 底部：feedback + 按钮横排
+    const footer = el('div', 'plan-approval-footer');
+
     const feedbackInput = document.createElement('input');
     feedbackInput.type = 'text';
     feedbackInput.className = 'plan-approval-feedback';
-    feedbackInput.placeholder = 'Optional feedback (leave blank to use default message)';
-    feedbackRow.appendChild(feedbackInput);
-    panel.appendChild(feedbackRow);
+    feedbackInput.placeholder = 'Feedback (optional, Enter to approve)';
+    feedbackInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            e.stopPropagation();
+            if (!feedbackInput.disabled) approvePlan(runId, feedbackInput.value);
+        }
+    });
+    footer.appendChild(feedbackInput);
 
-    const btnRow = el('div', 'plan-approval-btns');
+    const btns = el('div', 'plan-approval-btns');
 
     const approveBtn = document.createElement('button');
     approveBtn.className = 'btn-approve';
-    approveBtn.textContent = '✅ Approve';
+    approveBtn.textContent = 'Approve';
     approveBtn.onclick = () => approvePlan(runId, feedbackInput.value);
 
     const rejectBtn = document.createElement('button');
     rejectBtn.className = 'btn-reject';
-    rejectBtn.textContent = '❌ Reject';
+    rejectBtn.textContent = 'Reject';
     rejectBtn.onclick = () => rejectPlan(runId, feedbackInput.value);
 
-    btnRow.appendChild(approveBtn);
-    btnRow.appendChild(rejectBtn);
-    panel.appendChild(btnRow);
+    btns.appendChild(approveBtn);
+    btns.appendChild(rejectBtn);
+    footer.appendChild(btns);
+    panel.appendChild(footer);
 
-    // 插入到 outputArea 末尾（SSE stream 下方）
-    const outputArea = document.getElementById('outputArea');
-    outputArea.appendChild(panel);
-    panel.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    document.body.appendChild(panel);
+    _positionPlanPanel(panel);
+    feedbackInput.focus();
 }
+
+function _positionPlanPanel(panel) {
+    const inputWrap = document.querySelector('.input-wrap') || document.getElementById('promptInput');
+    if (!inputWrap) return;
+    const rect = inputWrap.getBoundingClientRect();
+    const maxH = Math.min(window.innerHeight * 0.55, 500);
+    panel.style.position = 'fixed';
+    panel.style.left = rect.left + 'px';
+    panel.style.width = rect.width + 'px';
+    panel.style.bottom = (window.innerHeight - rect.top + 12) + 'px';
+    panel.style.maxHeight = maxH + 'px';
+    panel.style.zIndex = '1000';
+    panel.style.boxShadow = '0 -4px 24px rgba(0,0,0,0.25)';
+}
+
+// 窗口 resize 时重新定位
+window.addEventListener('resize', () => {
+    const panel = document.querySelector('.plan-approval-panel');
+    if (panel && panel.style.position === 'fixed') _positionPlanPanel(panel);
+});
 
 async function approvePlan(runId, feedback) {
     const panel = document.querySelector('.plan-approval-panel');
-    if (panel) panel.remove();
+    if (panel) {
+        // 禁用所有按钮防止重复点击
+        panel.querySelectorAll('button').forEach(b => b.disabled = true);
+        panel.querySelector('.plan-approval-feedback').disabled = true;
+    }
     const resp = await fetch(`/api/run/${runId}/plan/approve`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ feedback: feedback || '' }),
     });
     const data = await resp.json();
+    if (panel) panel.remove();
     if (data.ok) {
         setStatus('running', STATUS_LABEL.running);
         document.getElementById('stopBtn').style.display = '';
@@ -1137,13 +1182,17 @@ async function approvePlan(runId, feedback) {
 
 async function rejectPlan(runId, feedback) {
     const panel = document.querySelector('.plan-approval-panel');
-    if (panel) panel.remove();
+    if (panel) {
+        panel.querySelectorAll('button').forEach(b => b.disabled = true);
+        panel.querySelector('.plan-approval-feedback').disabled = true;
+    }
     const resp = await fetch(`/api/run/${runId}/plan/reject`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ feedback: feedback || '' }),
     });
     const data = await resp.json();
+    if (panel) panel.remove();
     if (data.ok) {
         setStatus('running', STATUS_LABEL.running);
         document.getElementById('stopBtn').style.display = '';

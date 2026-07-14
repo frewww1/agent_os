@@ -318,6 +318,17 @@ async def get_run(run_id: str):
         return JSONResponse({"error": "run not found"}, status_code=404)
 
     try:
+        # plan_pending 状态时，附上计划文件内容
+        plan_content = None
+        plan_file = None
+        if run_info.status.value == "plan_pending":
+            plan_file = pm._find_latest_plan_file()
+            if plan_file:
+                try:
+                    with open(plan_file, "r", encoding="utf-8", errors="replace") as pf:
+                        plan_content = pf.read()[:10000]
+                except Exception:
+                    pass
         return JSONResponse({
             "run_id": run_info.run_id,
             "prompt": run_info.prompt,
@@ -342,6 +353,8 @@ async def get_run(run_id: str):
             "goal": run_info.goal,
             "goal_retries": run_info.goal_retries,
             "max_goal_retries": pm.MAX_GOAL_RETRIES,
+            "plan_content": plan_content,
+            "plan_file": plan_file,
         })
     except Exception as e:
         import traceback
