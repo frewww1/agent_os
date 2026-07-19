@@ -162,11 +162,26 @@
                             <option value="">Default</option>
                         </select>
                     </label>
-                    <label class="goal-picker" id="goalPicker">
-                        <input type="checkbox" id="goalCheck" onchange="onGoalToggle()">
-                        <span class="goal-picker-label">Goal</span>
-                        <input class="goal-input" id="goalInput" placeholder="e.g. test-cases.md generated..." onblur="onGoalBlur()" onkeydown="if(event.key==='Enter')event.target.blur()">
-                    </label>
+                    <div class="goal-picker" id="goalPicker">
+                        <label class="goal-check-label">
+                            <input type="checkbox" id="goalCheck" onchange="onGoalToggle()">
+                            <span class="goal-picker-label">🎯 Goal</span>
+                        </label>
+                        <div class="goal-row" id="goalRow" style="display:none">
+                            <input class="goal-input" id="goalInput" placeholder="goal condition, e.g. all tests pass and coverage > 80%..." onblur="onGoalBlur()" onkeydown="if(event.key==='Enter')event.target.blur()">
+                            <span class="goal-retries-wrap">
+                                <span class="goal-retries-label">max retries</span>
+                                <input class="goal-retries-input" id="goalRetries" type="number" min="1" max="99" value="5" onchange="onGoalRetriesChange()" title="最大重试次数">
+                            </span>
+                        </div>
+                        <label class="goal-check-label" style="margin-left:12px">
+                            <input type="checkbox" id="supervisorCheck" onchange="onSupervisorToggle()">
+                            <span class="goal-picker-label">👁️ Supervisor</span>
+                        </label>
+                        <div class="goal-row" id="supervisorRow" style="display:none">
+                            <input class="goal-input" id="supervisorInput" placeholder="supervisor instructions, e.g. review code quality and suggest improvements..." onblur="onSupervisorBlur()" onkeydown="if(event.key==='Enter')event.target.blur()">
+                        </div>
+                    </div>
                     <span class="input-hint"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> send</span>
                 </div>
             </div>
@@ -432,15 +447,30 @@ async function runDagTemplate() {
     refreshTree();
 }
 
+let sending = false;
+
 async function send() {
+    if (sending) return;
     const prompt = document.getElementById('promptInput').value.trim();
     if (!prompt) return;
-    if (currentRunId) {
-        await continueChat(prompt);
-    } else {
-        await startNew(prompt);
+
+    sending = true;
+    const btn = document.getElementById('sendBtn');
+    btn.disabled = true;
+    btn.textContent = 'Sending...';
+
+    try {
+        if (currentRunId) {
+            await continueChat(prompt);
+        } else {
+            await startNew(prompt);
+        }
+        document.getElementById('promptInput').value = '';
+    } finally {
+        sending = false;
+        btn.disabled = false;
+        btn.textContent = 'Send';
     }
-    document.getElementById('promptInput').value = '';
 }
 
 function getGoal() {
@@ -450,13 +480,22 @@ function getGoal() {
     return (input && input.value.trim()) || null;
 }
 
+function getSupervisor() {
+    const check = document.getElementById('supervisorCheck');
+    if (!check || !check.checked) return null;
+    const input = document.getElementById('supervisorInput');
+    return (input && input.value.trim()) || null;
+}
+
 async function startNew(prompt) {
     const model = document.getElementById('modelSelect').value || null;
     const goal = getGoal();
+    const supervisor = getSupervisor();
+    const maxRetries = parseInt(document.getElementById('goalRetries').value) || null;
     const resp = await fetch('/api/run', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({prompt, model, goal})
+        body: JSON.stringify({prompt, model, goal, max_goal_retries: maxRetries, supervisor})
     });
     const data = await resp.json();
     if (data.error) { alert(data.error); return; }
@@ -539,13 +578,9 @@ async function viewRun(runId) {
     updateConvSubtitle(data);
 
     const events = data.events || [];
-    if (events.length === 0 && (data.output || []).length > 0) {
-        appendEvent({ kind: 'raw', text: data.output.join('\n') });
-    } else {
-        for (const ev of events) {
-            if (ev.seq) renderedSeq = ev.seq;
-            appendEvent(ev);
-        }
+    for (const ev of events) {
+        if (ev.seq) renderedSeq = ev.seq;
+        appendEvent(ev);
     }
     autoScroll = true;
     unreadEvents = 0;
@@ -614,6 +649,7 @@ function renderEvent(ev) {
     const k = ev.kind;
     if (k === 'turn') return renderTurn(ev);
     if (k === 'prompt') return renderPrompt(ev);
+    if (k === 'text_delta') return renderTextDelta(ev);
     if (k === 'text') return renderText(ev);
     if (k === 'tool_use') return renderToolUse(ev);
     if (k === 'tool_result') return renderToolResult(ev);
@@ -783,12 +819,56 @@ async function rewindToSeq(seq, promptText) {
     }
 }
 
+// 打字效果：text_delta 和 text 共享同一个 DOM 元素
+let _typewriterBuf = '';
+let _typewriterCard = null;
+let _typewriterTimer = null;
+const TYPING_SPEED = 15;
+
+function _ensureTypewriterCard() {
+    if (_typewriterCard) return _typewriterCard;
+    const stream = document.getElementById('convStream');
+    _typewriterCard = el('div', 'msg msg-text');
+    _typewriterCard.appendChild(el('div', 'msg-role', 'agent'));
+    const body = el('div', 'msg-body');
+    body.id = '_twBody';
+    _typewriterCard.appendChild(body);
+    stream.appendChild(_typewriterCard);
+    return _typewriterCard;
+}
+
+function _typeStep() {
+    const body = document.getElementById('_twBody');
+    if (!body) return;
+    body.textContent = _typewriterBuf.slice(0, body.textContent.length + 1);
+    if (body.textContent.length < _typewriterBuf.length) return;
+    clearInterval(_typewriterTimer);
+    _typewriterTimer = null;
+}
+
+function _clearTypewriter() {
+    if (_typewriterTimer) { clearInterval(_typewriterTimer); _typewriterTimer = null; }
+    // 不移除 card，等 text 事件来替换
+}
+
+function renderTextDelta(ev) {
+    _ensureTypewriterCard();
+    _typewriterBuf += (ev.text || '');
+    if (!_typewriterTimer) _typewriterTimer = setInterval(_typeStep, TYPING_SPEED);
+    return null; // 不追加新节点，已由 _ensureTypewriterCard 处理
+}
+
 function renderText(ev) {
-    const card = el('div', 'msg msg-text');
+    _clearTypewriter();
+    _typewriterBuf = '';
+    const card = _typewriterCard || el('div', 'msg msg-text');
+    // 清除旧内容
+    card.innerHTML = '';
     card.appendChild(el('div', 'msg-role', 'agent'));
     const body = el('div', 'msg-body markdown-body');
     setMarkdownBody(body, ev.text || '');
     card.appendChild(body);
+    _typewriterCard = null;
     return card;
 }
 
@@ -1026,11 +1106,48 @@ function renderError(ev) {
 }
 
 function renderSystem(ev) {
+    const text = ev.text || '';
+    // Supervisor 事件特殊渲染
+    if (text.startsWith('[Agent OS] Supervisor')) {
+        return renderSupervisorMsg(ev);
+    }
     const card = el('div', 'msg msg-system');
     const body = el('div', 'msg-body');
-    body.textContent = ev.text || '';
+    body.textContent = text;
     card.appendChild(body);
     return card;
+}
+
+function renderSupervisorMsg(ev) {
+    const text = ev.text || '';
+    const card = el('div', 'msg msg-supervisor');
+    // 角色标签
+    const role = el('div', 'msg-role');
+    role.innerHTML = '&#x1F441; Supervisor';
+    card.appendChild(role);
+    // 内容
+    const body = el('div', 'msg-body');
+    // 提取类型和内容
+    if (text.includes('task complete')) {
+        body.innerHTML = '<span class="sup-pass">&#x2705; 审查通过 — 任务完成</span>';
+    } else if (text.includes('correction:')) {
+        const idx = text.toLowerCase().indexOf('correction:');
+        const msg = text.substring(idx + 11).trim();
+        body.innerHTML = '<span class="sup-corr">&#x26A0; 需要修正</span>'
+            + '<div class="sup-detail">' + escapeHtml(msg) + '</div>';
+    } else if (text.includes('continue')) {
+        body.innerHTML = '<span class="sup-cont">&#x23F3; 继续工作</span>';
+    } else {
+        body.textContent = text;
+    }
+    card.appendChild(body);
+    return card;
+}
+
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
 }
 
 function renderRaw(ev) {
@@ -1226,20 +1343,23 @@ async function updateSessionInfo() {
     if (data.children_run_ids && data.children_run_ids.length > 0) parts.push(`${data.children_run_ids.length} children`);
     info.textContent = parts.join(' · ');
     meta.textContent = parts.join(' · ');
-    // Goal picker (next to Model)
-    const picker = document.getElementById('goalPicker');
+    // Goal picker
     const check = document.getElementById('goalCheck');
     const input = document.getElementById('goalInput');
+    const goalRow = document.getElementById('goalRow');
+    const retriesInput = document.getElementById('goalRetries');
     const goalText = data.goal || '';
-    _goalUpdating = true;  // 防止 onchange 触发 API 调用
+    const maxRetries = data.max_goal_retries || 5;
+    _goalUpdating = true;
     if (goalText) {
         check.checked = true;
         input.value = goalText;
-        input.style.display = '';
+        goalRow.style.display = '';
+        retriesInput.value = maxRetries;
     } else {
         check.checked = false;
         input.value = '';
-        input.style.display = 'none';
+        goalRow.style.display = 'none';
     }
     _goalUpdating = false;
 }
@@ -1249,9 +1369,11 @@ let _goalUpdating = false;  // 程序更新 checkbox 时不触发 API
 async function onGoalToggle() {
     if (_goalUpdating) return;
     const check = document.getElementById('goalCheck');
+    const goalRow = document.getElementById('goalRow');
     const input = document.getElementById('goalInput');
-    input.style.display = check.checked ? '' : 'none';
-    if (check.checked) {
+    const show = check.checked;
+    goalRow.style.display = show ? '' : 'none';
+    if (show) {
         input.focus();
     } else if (currentRunId) {
         await fetch('/api/run/' + currentRunId + '/set-goal', {
@@ -1266,9 +1388,30 @@ async function onGoalBlur() {
     const input = document.getElementById('goalInput');
     const goal = input.value.trim();
     if (!currentRunId) return;
+    const maxRetries = parseInt(document.getElementById('goalRetries').value) || 5;
     await fetch('/api/run/' + currentRunId + '/set-goal', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({goal})
+        body: JSON.stringify({goal, max_retries: maxRetries})
+    });
+}
+
+function onSupervisorToggle() {
+    const check = document.getElementById('supervisorCheck');
+    const row = document.getElementById('supervisorRow');
+    row.style.display = check.checked ? '' : 'none';
+    if (check.checked) document.getElementById('supervisorInput').focus();
+}
+
+function onSupervisorBlur() {
+    // supervisor 通过 startNew 传入，不需要单独的 API
+}
+
+async function onGoalRetriesChange() {
+    if (_goalUpdating || !currentRunId) return;
+    const maxRetries = parseInt(document.getElementById('goalRetries').value) || 5;
+    await fetch('/api/run/' + currentRunId + '/set-max-goal-retries', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({max_retries: maxRetries})
     });
 }
 

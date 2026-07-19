@@ -6,3 +6,27 @@
 .agent_os_run_id
 **/node_modules/
 **/__pycache__/
+
+# Test artifacts
+.coverage
+.pytest_cache/
+loop_state.json
+_acceptance_v2.py
+_debug_events.py
+_final_acceptance.py
+_qst.py
+_quick_test.py
+
+# Temp files
+acceptance_result.txt
+acceptance_v2_result.txt
+sup_test_output.txt
+server.log
+server_acceptance.log
+help.txt
+
+# Plans / docs (temp)
+PLAN.md
+PLAN_FULL.md
+PLAN_MCP.md
+.codebuddy/

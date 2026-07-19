@@ -9,6 +9,7 @@ Usage:
     python .agent_os/main.py --port 8420
 """
 import argparse
+import asyncio
 import importlib.util
 import os
 import sys
@@ -32,28 +33,43 @@ if _pkg_name not in sys.modules:
     sys.modules[_pkg_name] = _pkg
     _spec.loader.exec_module(_pkg)
 
-from agent_os.process_manager import ProcessManager
+# 注册 agent_os.src 子包
+_src_pkg_name = "agent_os.src"
+if _src_pkg_name not in sys.modules:
+    _src_spec = importlib.util.spec_from_file_location(
+        _src_pkg_name,
+        _this_dir / "src" / "__init__.py",
+        submodule_search_locations=[str(_this_dir / "src")],
+    )
+    _src_pkg = importlib.util.module_from_spec(_src_spec)
+    sys.modules[_src_pkg_name] = _src_pkg
+    _src_spec.loader.exec_module(_src_pkg)
+
+from agent_os.src.core.process_manager import ProcessManager
 from agent_os.dashboard.app import app, set_process_manager
 
 
 def _load_cli_config():
-    """从 cli_config.json 读取默认 CLI，fallback 到 codebuddy。"""
+    """从 cli_config.json 读取配置，fallback 到 codebuddy + native。"""
     import json
     config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cli_config.json")
     try:
         with open(config_path, "r", encoding="utf-8") as f:
-            return json.load(f).get("cli", "codebuddy")
+            data = json.load(f)
+        return data.get("cli", "codebuddy"), data.get("backend", "native")
     except Exception:
-        return "codebuddy"
+        return "codebuddy", "native"
 
 
 def main():
-    default_cli = _load_cli_config()
+    default_cli, default_backend = _load_cli_config()
     parser = argparse.ArgumentParser(description="Agent OS - Web Terminal for Claude CLI")
     parser.add_argument("--port", type=int, default=8420, help="Server port (default: 8420)")
     parser.add_argument("--host", default="127.0.0.1", help="Server host (default: 127.0.0.1)")
     parser.add_argument("--cli", default=default_cli,
-                        help=f"Backend CLI command (default from config: {default_cli}; also supports: claude, claude-internal)")
+                        help=f"Backend CLI command (default from config: {default_cli})")
+    parser.add_argument("--backend", default=None,
+                        help=f"Agent backend: native, codebuddy-sdk, sdk, omnigent (default from config: {default_backend})")
     parser.add_argument("--model", default=None,
                         help="Default model for all agents (e.g. claude-sonnet-4.6, gpt-5.1). "
                              "None = use CLI default. Can be overridden per-agent in Dashboard.")
@@ -68,20 +84,23 @@ def main():
         project_root = os.path.abspath(args.root)
     else:
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    backend_type = args.backend or default_backend
     pm = ProcessManager(project_root=project_root, cli_command=args.cli, port=args.port,
-                        default_model=args.model)
+                        default_model=args.model, loop=asyncio.get_event_loop(),
+                        backend_type=backend_type)
     set_process_manager(pm)
 
     url = f"http://{args.host}:{args.port}"
     print()
     print("=" * 48)
-    print("  Agent OS — Web Terminal for Claude CLI")
+    print("  Agent OS — Multi-Agent Orchestration")
     print("=" * 48)
-    print(f"  URL:     {url}")
-    print(f"  CLI:     {args.cli}")
+    print(f"  URL:      {url}")
+    print(f"  Backend:  {backend_type}")
+    print(f"  CLI:      {args.cli}")
     if args.model:
-        print(f"  Model:   {args.model}")
-    print(f"  Root:    {project_root}")
+        print(f"  Model:    {args.model}")
+    print(f"  Root:     {project_root}")
     print("=" * 48)
     print()
 

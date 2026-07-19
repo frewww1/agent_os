@@ -1,0 +1,80 @@
+"""Agent OS Dashboard — Pydantic request models."""
+
+from typing import List
+
+from pydantic import BaseModel, model_validator
+
+
+class RunRequest(BaseModel):
+    prompt: str
+    agent_name: str | None = None
+    model: str | None = None
+    workspace_name: str | None = None
+    system_prompt: str | None = None
+    task_type: str = "generative"  # generative / interactive / explore
+    interactive: bool = False       # 兼容旧字段
+    goal: str | None = None
+    max_goal_retries: int | None = None
+    supervisor: str | None = None  # 监督 Agent 的 system prompt
+
+
+class ContinueRequest(BaseModel):
+    prompt: str
+    model: str | None = None
+    goal: str | None = None
+
+
+class DagStartRequest(BaseModel):
+    template_id: str
+    workspace_name: str
+    model: str | None = None
+    resume: bool = False  # True = 基于现有 workspace 的 dag.json 继续，不重新初始化
+
+
+class SpawnTask(BaseModel):
+    prompt: str
+    agent_name: str | None = None
+    type: str = "generative"  # "generative" or "interactive"
+    agent_type: str | None = None  # 兼容调度 agent 可能误传的字段名
+    model: str | None = None
+    step_id: str | None = None  # DAG step 标识，OS 据此打 [step:<id>] commit
+    goal: str | None = None  # DAG step 的 goal，透传给子 agent
+    supervisor: str | None = None  # DAG step 的 supervisor，透传给子 agent
+
+    @model_validator(mode="after")
+    def resolve_type(self):
+        """如果 type 为空/默认值，但 agent_type 有值，则用 agent_type 代替。"""
+        if not self.type or self.type == "generative":
+            if self.agent_type:
+                self.type = self.agent_type
+        return self
+
+
+class SpawnRequest(BaseModel):
+    tasks: List[SpawnTask]
+    wait_strategy: str = "all"
+    parent_run_id: str = ""
+    parent_session_id: str = ""
+
+
+class LabelRequest(BaseModel):
+    label: str
+
+
+class SwitchBranchRequest(BaseModel):
+    branch: str
+
+
+class PlanDecisionRequest(BaseModel):
+    feedback: str = ""
+    model: str | None = None
+
+
+class ReportRequest(BaseModel):
+    run_id: str = ""
+    result: str
+
+
+class SendMsgRequest(BaseModel):
+    run_id: str = ""
+    msg: str

@@ -47,7 +47,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import dag_planner as dp  # noqa: E402
+from ..core import dag_planner as dp  # noqa: E402
 
 
 def _workspace() -> str:
@@ -88,6 +88,8 @@ def main() -> None:
             "agent_name": by_id[i].get("agent_name"),
             "model": by_id[i].get("model"),
             "type": by_id[i].get("type", "generative"),
+            "goal": by_id[i].get("goal"),
+            "supervisor": by_id[i].get("supervisor"),
         } for i in ids]
         print(json.dumps(out, ensure_ascii=False))
 
