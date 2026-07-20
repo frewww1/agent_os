@@ -85,8 +85,10 @@ def main():
     else:
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     backend_type = args.backend or default_backend
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     pm = ProcessManager(project_root=project_root, cli_command=args.cli, port=args.port,
-                        default_model=args.model, loop=asyncio.get_event_loop(),
+                        default_model=args.model, loop=loop,
                         backend_type=backend_type)
     set_process_manager(pm)
 

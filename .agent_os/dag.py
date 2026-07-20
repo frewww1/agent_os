@@ -47,7 +47,14 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ..core import dag_planner as dp  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
+import importlib.util as _ilu
+_spec = _ilu.spec_from_file_location(
+    "dag_planner",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "src", "core", "dag_planner.py"),
+)
+dp = _ilu.module_from_spec(_spec)
+_spec.loader.exec_module(dp)
 
 
 def _workspace() -> str:
