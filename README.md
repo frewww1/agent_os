@@ -91,11 +91,7 @@ Dashboard 中勾选 Supervisor 并填写审查标准即可启用。监督者提�
 
 ### Goal 目标评估
 
-为 Agent 设置目标描述，完成后自动语义判断是否达成。未达成则注入反馈自动重试。
-
-```json
-{"goal": "创建一个 hello.py，打印 Hello World", "max_goal_retries": 3}
-```
+为 Agent 设置目标描述，完成后自动语义判断是否达成。未达成则注入反馈自动重试，可配置最大重试次数。Dashboard 中勾选 Goal 并填写目标即可启用。
 
 ### 多 Agent 协同
 
@@ -156,13 +152,7 @@ AgentBackend (统一协议)
 
 ### Workspace 文件记忆
 
-同一任务下所有 Agent 共享 workspace 目录。Git 自动记录三级 commit：
-
-- `[turn:<ws>:<run>:N]` — 每轮对话
-- `[agent:<ws>:<run>]` — 每个 Agent 完成
-- `[step:<ws>:<step_id>]` — DAG step 完成
-
-回退通过 `fork_branch_locked()` 创建衍生分支，基准分支不变。
+同一任务下所有 Agent 共享 workspace 目录，子 Agent 可直接读写父 Agent 产出的文件。任务文件持久化在 workspace 中，回退操作自动恢复文件到对应快照。
 
 ### Agent 规范
 
