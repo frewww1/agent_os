@@ -66,13 +66,11 @@ dag.py --ready → 取就绪节点 → 用 Task 工具创建子 Agent → 等待
 
 #### 回退到任意 Step
 
-回退时 OS 自动完成三件事：
+可以随时从中间某个 step 重新跑，不用从头开始。选择目标 step 后自动完成：
 
-1. **代码回退**：Git checkout 到该 step 的快照，fork 新分支
+1. **文件恢复**：workspace 文件回退到该 step 执行前的状态
 2. **状态重置**：该 step 及下游全部重置为 pending
-3. **重新调度**：调度 Agent 从该 step 继续执行
-
-不影响原始 Git 记录，安全可追溯。
+3. **继续调度**：调度 Agent 从该 step 重新执行
 
 ### Supervisor 监督者
 
