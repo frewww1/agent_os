@@ -24,8 +24,10 @@ from ..agent.backend import get_backend, SessionHandle
 
 USE_SHELL = False  # 不用 shell=True，避免特殊字符被 CMD 解析破坏参数
 
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 # 日志配置
-LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+LOG_DIR = os.path.join(PROJECT_ROOT, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 logging.basicConfig(
     level=logging.DEBUG,
@@ -63,7 +65,7 @@ class ProcessManager:
         self._loop = loop or asyncio.get_event_loop()
 
         # 持久化文件
-        self._state_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "state")
+        self._state_dir = os.path.join(PROJECT_ROOT, "state")
         os.makedirs(self._state_dir, exist_ok=True)
         self._runs_file = os.path.join(self._state_dir, "runs.json")
         # 启动时尝试恢复历史 runs（仅元数据 + 事件流；进程引用全部丢失，

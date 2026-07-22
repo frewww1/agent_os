@@ -2,12 +2,15 @@
 __pycache__/
 *.pyc
 *.pyo
+src/**/__pycache__/
 
 # Logs
 logs/
+src/**/logs/
 
 # Runtime state
 state/
+src/**/state/
 
 # Runtime workspaces
 workspaces/
