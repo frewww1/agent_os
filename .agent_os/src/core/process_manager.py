@@ -546,6 +546,8 @@ class ProcessManager:
                     pass
             goal = task.get("goal")  # DAG step 级 goal（session 级也由此传入）
             supervisor = task.get("supervisor")  # DAG step 级 supervisor
+            if isinstance(supervisor, dict):
+                supervisor = _json.dumps(supervisor, ensure_ascii=False)
             if not prompt:
                 logger.warning(f"spawn_children: task {task.get('id','?')} has no prompt, skipping")
                 continue

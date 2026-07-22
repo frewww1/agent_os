@@ -136,6 +136,7 @@ class RunInfo(BaseModel):
             "goal_retries": self.goal_retries,
             "plan_content": self.plan_content,
             "plan_file": self.plan_file,
+            "supervisor": self.supervisor,
             "os_events": os_events,
         }
 
