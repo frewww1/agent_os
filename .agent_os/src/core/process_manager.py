@@ -1410,6 +1410,7 @@ class ProcessManager:
                 "children_run_ids": ri.children_run_ids,
                 "started_at": ri.started_at.isoformat(),
                 "completed_at": ri.completed_at.isoformat() if ri.completed_at else None,
+                "events": list(ri.output_events),
                 "events_count": len(ri.output_events),
                 "turns": len(ri.turn_markers),
             })
@@ -1469,6 +1470,7 @@ class ProcessManager:
             "session_id": run_info.session_id,
             "started_at": run_info.started_at.isoformat(),
             "completed_at": run_info.completed_at.isoformat() if run_info.completed_at else None,
+            "events": list(run_info.output_events),
             "turns": len(run_info.turn_markers),
             "interactive": run_info.interactive,
             "task_type": run_info.task_type,

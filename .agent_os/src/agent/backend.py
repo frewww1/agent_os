@@ -837,7 +837,13 @@ def _locate_cli_session_jsonl(session_id: str, cwd: str | None = None) -> str | 
     2. ~/.codebuddy/projects/
     3. ~/.claude/projects/
     """
-    from ..utils import cwd_to_session_key
+    try:
+        from ..utils import cwd_to_session_key
+    except ImportError:
+        try:
+            from src.utils import cwd_to_session_key
+        except ImportError:
+            cwd_to_session_key = None
 
     home = os.path.expanduser("~")
     roots = []
@@ -851,7 +857,7 @@ def _locate_cli_session_jsonl(session_id: str, cwd: str | None = None) -> str | 
         if os.path.isdir(os.path.join(p, "projects")):
             roots.append(p)
 
-    if cwd:
+    if cwd and cwd_to_session_key:
         key = cwd_to_session_key(cwd)
     else:
         key = None

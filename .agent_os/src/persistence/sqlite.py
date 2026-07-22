@@ -103,28 +103,43 @@ def _restore_events_with_jsonl(pm, ri, r, os_events: list) -> None:
     try:
         cwd = ri.workspace_path or pm.project_root
         jsonl_path = pm._backend.get_session_path(ri.session_id, cwd) if ri.session_id else None
-    except Exception:
+    except Exception as e:
+        logger.warning(f"restore jsonl: get_session_path failed for {ri.run_id[:8]}: {e}")
         jsonl_path = None
+
+    if not jsonl_path:
+        logger.debug(f"restore: no jsonl path for {ri.run_id[:8]} (session={ri.session_id})")
 
     events: list[dict] = []
 
-    # 1. 从 jsonl 读取事件，按行号分配 seq（每行一个 stream-json 事件）
+    # 1. 从 jsonl 读取会话事件
+    # CodeBuddy 用 session 格式，Claude 用 stream-json 格式，依次尝试
     if jsonl_path and os.path.exists(jsonl_path):
         try:
-            from ..core.stream_parser import parse_stream_json_events
+            from .session_parser import parse_cli_session_jsonl
             with open(jsonl_path, "r", encoding="utf-8", errors="replace") as f:
                 seq = 1
                 for line in f:
                     line = line.strip()
                     if not line:
                         continue
-                    for ev in parse_stream_json_events(line):
+                    # 先用 session 格式（CodeBuddy），失败则用 stream 格式（Claude）
+                    parsed = parse_cli_session_jsonl(line)
+                    if not parsed:
+                        try:
+                            from ..core.stream_parser import parse_stream_json_events
+                            parsed = parse_stream_json_events(line)
+                        except Exception:
+                            pass
+                    for ev in parsed:
                         ev["seq"] = seq
                         ev["_src"] = "jsonl"
                         events.append(ev)
                         seq += 1
         except Exception as e:
-            logger.warning(f"restore jsonl for {ri.run_id[:8]}: {e}")
+            logger.warning(f"restore jsonl parse for {ri.run_id[:8]}: {e}")
+    elif jsonl_path:
+        logger.debug(f"restore: jsonl not found for {ri.run_id[:8]}: {jsonl_path}")
 
     # 2. 加入 OS 注入事件
     for e in os_events:
@@ -142,7 +157,7 @@ def _restore_events_with_jsonl(pm, ri, r, os_events: list) -> None:
         max((e.get("seq", 0) for e in events), default=0),
     )
     if events:
-        logger.debug(f"restored {len(events)} events for {ri.run_id[:8]} "
+        logger.info(f"restored {len(events)} events for {ri.run_id[:8]} "
                      f"({len(os_events)} OS, jsonl={jsonl_path is not None})")
 
 
