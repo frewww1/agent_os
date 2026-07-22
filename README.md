@@ -101,7 +101,7 @@ Dashboard 中勾选 Supervisor 并填写审查标准即可启用。监督者提�
 | `interactive` | 等待用户在 Dashboard 点 Done |
 | `explore` | 不能 spawn 子 Agent，用于探索任务 |
 
-父 Agent 用 **Task 工具**创建子 Agent，OS 自动拦截并管理生命周期。子 Agent 继承父 Agent 的 workspace，共享文件上下文。最多 3 层嵌套，支持 `all` / `any` 等待策略。
+父 Agent 用 **Task 工具**创建子 Agent，OS 自动拦截并管理生命周期。子 Agent 继承父 Agent 的 workspace，共享文件上下文，最多 3 层嵌套。
 
 ### 其他功能
 
