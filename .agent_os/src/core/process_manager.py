@@ -19,7 +19,6 @@ from .models import RunStatus, RunInfo, SpawnRequest
 from ..utils import sanitize, sanitize_workspace_name, cwd_to_session_key
 from ..persistence.sqlite import serialize_run, save_runs_to_disk, load_runs_from_disk
 from .stream_parser import extract_session_id, parse_stream_json_events
-from .cli_resolver import list_models as _list_models, MODELS_CACHE_FILE
 from ..agent.backend import get_backend, SessionHandle
 
 
@@ -72,14 +71,17 @@ class ProcessManager:
         load_runs_from_disk(self)
         # 迁移旧位置 workspaces/<ws>/state/ → state/workspaces/<ws>/
         self._migrate_legacy_workspace_state()
-        # 节流写盘：每次 add_event 不直接落盘，由异步任务定期落盘
-        self._save_lock = asyncio.Lock()
+        # 节流写盘：每次 add_event 不直接落盘，由后台线程定期落盘
+        self._save_lock = threading.Lock()
         self._save_dirty = False
-        self._save_task = asyncio.ensure_future(self._periodic_save_worker(), loop=self._loop)
+        self._save_task = threading.Thread(
+            target=self._periodic_save_worker, daemon=True, name="persist-worker"
+        )
+        self._save_task.start()
 
         # 子 agent 超时看护：默认 20 分钟无新事件视为 stale
         self._idle_timeout_sec = 20 * 60
-        self._timeout_task = asyncio.ensure_future(self._timeout_watcher(), loop=self._loop)
+        self._timeout_task = self._loop.create_task(self._timeout_watcher())
 
     async def _timeout_watcher(self):
         """每 30s 扫一次所有 RUNNING 的子 agent，超过 idle_timeout 强制结束。"""
@@ -124,16 +126,19 @@ class ProcessManager:
 
     # ---------- persistence ----------
 
-    async def _periodic_save_worker(self):
-        """每 3 秒检查一次脏标记，dirty 时写盘。"""
+    def _periodic_save_worker(self):
+        """每 3 秒检查一次脏标记，dirty 时写盘（后台线程）。"""
+        import time as _time
         while True:
-            await asyncio.sleep(3.0)
+            _time.sleep(3.0)
             try:
-                async with self._save_lock:
+                with self._save_lock:
                     if not self._save_dirty:
                         continue
                     self._save_dirty = False
+                count = len(self.runs)
                 save_runs_to_disk(self)
+                logger.info(f"persist: saved {count} runs to disk")
             except Exception as e:
                 logger.warning(f"persist worker error: {e}")
 
@@ -317,16 +322,12 @@ class ProcessManager:
     def list_models(self, refresh: bool = False) -> list[str]:
         """返回当前 CLI 支持的模型 ID 列表，带内存缓存。
 
-        优先委托给 backend.list_models()（支持 SDK 后端等），
-        fallback 到 CLI --help 解析（兼容旧逻辑）。
+        委托给 backend.list_models()（NativeBackend 内部已包含缓存读取 +
+        CLI --help 解析逻辑，无需额外回退）。
         """
         if self._models_cache is not None and not refresh:
             return self._models_cache
-        # 委托给 backend（新协议不需要 cli_prefix）
         models = self._backend.list_models()
-        if not models:
-            # fallback 到 CLI --help 解析（仅 native 后端有效）
-            models = _list_models(self, refresh)
         self._models_cache = models
         return models
 
@@ -378,14 +379,9 @@ class ProcessManager:
         if step_id_from_env:
             logger.info(f"[{run_id[:8]}] STEP_ID from env: {step_id_from_env}")
 
-        # 子 agent 注入 Task Hook 配置（拦截原生 Task 工具，替代 MCP）
-        if parent_run_id is not None:
-            hook_config = self._get_task_hook_config()
-            if hook_config:
-                env["AGENT_OS_HOOK_CONFIG"] = hook_config
-
         logger.info(f"[{run_id[:8]}] Launching agent...")
-        workspace_cwd = self.project_root
+        # 子 agent 的 cwd 设为 .agent_os/ 根目录，根 agent 用 project_root
+        workspace_cwd = os.path.join(self.project_root, ".agent_os") if parent_run_id else self.project_root
         try:
             handle = self._backend.launch(
                 prompt=prompt,
@@ -426,7 +422,7 @@ class ProcessManager:
         )
         # 运行时字段（pydantic 不管理，直接设置）
         object.__setattr__(run_info, '_session', handle)
-        object.__setattr__(run_info, '_new_output_event', asyncio.Event())
+        object.__setattr__(run_info, '_new_output_event', threading.Event())
         object.__setattr__(run_info, '_loop', loop)
         object.__setattr__(run_info, '_dirty_callback', self._mark_dirty)
         run_info._depth = _depth
@@ -530,9 +526,22 @@ class ProcessManager:
         for task in tasks:
             prompt = task.get("prompt", "")
             agent_name = task.get("agent_name")
-            task_type = task.get("type") or task.get("agent_type") or "generative"
+            task_type = task.get("type") or task.get("agent_type") or task.get("subagent_type") or "generative"
             child_model = task.get("model") or parent_model
             step_id = task.get("step_id")  # DAG step 标识，透传给子 agent env
+            # 如果调度 agent 没传 type，从 dag.json 自动补全
+            if step_id and parent_workspace and not task.get("type") and not task.get("agent_type") and not task.get("subagent_type"):
+                try:
+                    dag = dp.load_dag(parent_workspace)
+                    for s in dag.get("steps", []):
+                        if s.get("id") == step_id:
+                            dag_type = s.get("type", "generative")
+                            if dag_type != task_type:
+                                task_type = dag_type
+                                logger.info(f"spawn_children: auto-filled type={task_type} for step {step_id}")
+                            break
+                except Exception:
+                    pass
             goal = task.get("goal")  # DAG step 级 goal（session 级也由此传入）
             supervisor = task.get("supervisor")  # DAG step 级 supervisor
             if not prompt:
@@ -685,7 +694,7 @@ class ProcessManager:
         # 唤醒 SSE
         if run_info._loop and run_info._new_output_event:
             try:
-                run_info._loop.call_soon_threadsafe(run_info._new_output_event.set)
+                run_info._new_output_event.set()
             except RuntimeError:
                 pass
 
@@ -708,6 +717,35 @@ class ProcessManager:
         if run_info.interactive:
             logger.info(f"[{run_id[:8]}] Interactive agent called report.py — ignored, waiting for user Done")
             return True
+
+        # supervisor agent 调 report.py → 用上报结果唤醒等待中的执行 agent
+        if run_info.parent_run_id:
+            parent_ri = self.runs.get(run_info.parent_run_id)
+            if parent_ri and getattr(parent_ri, '_waiting_supervisor', None) == run_id:
+                result = result.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
+                run_info.reported_result = result
+                run_info.status = RunStatus.COMPLETED
+                run_info.completed_at = datetime.now()
+
+                msg_upper = result.strip().upper()
+                object.__setattr__(parent_ri, '_waiting_supervisor', None)
+
+                if msg_upper.startswith("PASS"):
+                    object.__setattr__(parent_ri, '_active_supervisor', None)
+                    parent_ri.supervisor = None
+                    parent_ri.add_text_line("[Agent OS] Supervisor: PASS — task complete", kind="system")
+                    logger.info(f"[{parent_ri.run_id[:8]}] Supervisor PASS")
+                    self._on_run_completed(parent_ri)
+                elif msg_upper.startswith("CORRECTION"):
+                    parent_ri.add_text_line(f"[Agent OS] Supervisor correction: {result[:200]}", kind="system")
+                    logger.info(f"[{parent_ri.run_id[:8]}] Supervisor CORRECTION, resuming")
+                    self.continue_run(parent_ri.run_id, result, source="os")
+                else:
+                    parent_ri.add_text_line(f"[Agent OS] Supervisor feedback: {result[:200]}", kind="system")
+                    self.continue_run(parent_ri.run_id, result, source="os")
+
+                self._mark_dirty()
+                return True
 
         result = result.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
         run_info.reported_result = result
@@ -859,7 +897,7 @@ class ProcessManager:
         })
         if run_info.workspace_path:
             env["AGENT_OS_WORKSPACE"] = run_info.workspace_path
-            workspace_cwd = self.project_root
+            workspace_cwd = os.path.join(self.project_root, ".agent_os") if run_info.parent_run_id else self.project_root
         else:
             env = self._build_env(run_id)
             workspace_cwd = self.project_root
@@ -877,7 +915,7 @@ class ProcessManager:
         run_info.completed_at = None
         run_info.exit_code = None
         object.__setattr__(run_info, '_session', handle)
-        object.__setattr__(run_info, '_new_output_event', asyncio.Event())
+        object.__setattr__(run_info, '_new_output_event', threading.Event())
 
         self._start_reader(run_info)
         self._mark_dirty()
@@ -907,7 +945,7 @@ class ProcessManager:
                     pass
 
             if run_info._loop and run_info._new_output_event:
-                run_info._loop.call_soon_threadsafe(run_info._new_output_event.set)
+                run_info._new_output_event.set()
             self._mark_dirty()
             return True
         return False
@@ -942,6 +980,14 @@ class ProcessManager:
                 except ValueError:
                     pass
             sr.completed_children.discard(run_id)
+        # 从 SQLite 持久化层删除
+        try:
+            conn = getattr(self, '_db_conn', None)
+            if conn:
+                conn.execute("DELETE FROM runs WHERE run_id=?", (run_id,))
+                conn.commit()
+        except Exception:
+            pass
         del self.runs[run_id]
         return deleted + 1
 
@@ -1091,7 +1137,7 @@ class ProcessManager:
         # 唤醒 SSE 让前端立刻看到状态变化
         if ri._loop and ri._new_output_event:
             try:
-                ri._loop.call_soon_threadsafe(ri._new_output_event.set)
+                ri._new_output_event.set()
             except RuntimeError:
                 pass
         self._mark_dirty()
@@ -1153,7 +1199,7 @@ class ProcessManager:
         # 唤醒 SSE
         if ri._loop and ri._new_output_event:
             try:
-                ri._loop.call_soon_threadsafe(ri._new_output_event.set)
+                ri._new_output_event.set()
             except RuntimeError:
                 pass
         self._mark_dirty()
@@ -1453,7 +1499,9 @@ class ProcessManager:
 
             run_info._new_output_event.clear()
             try:
-                await asyncio.wait_for(run_info._new_output_event.wait(), timeout=1.0)
+                await asyncio.get_event_loop().run_in_executor(
+                    None, run_info._new_output_event.wait, 1.0
+                )
             except asyncio.TimeoutError:
                 continue
 
@@ -1466,12 +1514,22 @@ class ProcessManager:
         elif run_info._fallback_result:
             parts.append(f"Final output: {run_info._fallback_result}")
 
-        event_texts = [
-            e.get("text", "") for e in run_info.output_events
-            if e.get("kind") in ("text", "text_delta", "tool_result", "report")
-        ]
-        if event_texts:
-            parts.append("Work log:\n" + "\n".join(event_texts))
+        # text 事件（完整消息）用换行分隔，text_delta（流式片段）直接拼接
+        log_lines = []
+        delta_buf = []
+        for e in run_info.output_events:
+            kind = e.get("kind", "")
+            if kind == "text_delta":
+                delta_buf.append(e.get("text", ""))
+            elif kind in ("text", "tool_result", "report"):
+                if delta_buf:
+                    log_lines.append("".join(delta_buf))
+                    delta_buf = []
+                log_lines.append(e.get("text", ""))
+        if delta_buf:
+            log_lines.append("".join(delta_buf))
+        if log_lines:
+            parts.append("Work log:\n" + "\n".join(log_lines))
 
         if run_info.messages:
             msgs = "\n".join(m.get("msg", "") for m in run_info.messages[-15:])
@@ -1480,99 +1538,53 @@ class ProcessManager:
 
         return "\n\n".join(parts)[:12000]
 
-    def _run_supervisor(self, run_info: RunInfo) -> bool:
-        """监督模式：每轮对话结束后，监督 Agent 审查产出并决定是否纠正。
-
-        返回 True 表示已处理（resume 了工作 agent），False 表示监督通过。
-        首次调用 launch 新会话，后续调用 resume 同一会话，让 supervisor 看到审查历史。
+    def _spawn_supervisor(self, run_info: RunInfo) -> str:
+        """为执行 agent 创建监督 agent，返回 supervisor 的 run_id。
+        
+        不阻塞：supervisor 作为子 agent 运行，
+        通过 send.py 发反馈唤醒执行 agent。
         """
         context = self._build_work_context(run_info)
         if not context.strip():
-            return False
+            return ""
 
         task_desc = run_info.goal or run_info.prompt[:200]
         supervisor_prompt = (
-            f"## Current Task\n{task_desc}\n\n"
-            f"## Agent Output (Turn {run_info.goal_retries})\n{context}\n\n"
-            f"## Instructions\n"
-            f"Strictly review the agent's output against the criteria in your system prompt. "
-            f"Only reply PASS if ALL criteria are fully met. "
-            f"If ANY criterion is not met or partially met, reply CORRECTION with specific, "
-            f"actionable feedback on what exactly needs to be fixed.\n\n"
-            f"Reply format:\n"
-            f"- PASS (only if everything is correct)\n"
-            f"- CORRECTION: <specific feedback on what to fix>\n"
-            f"- CONTINUE (if the agent needs to continue working but no specific correction)\n\n"
-            f"Your response:"
+            f"## 审查任务\n{task_desc}\n\n"
+            f"## Agent 产出\n{context[:8000]}\n\n"
+            f"## 指令\n"
+            f"审查 agent 产出是否满足所有标准。\n"
+            f"全部满足 → `python report.py --result \"PASS\"` 结束审查\n"
+            f"有问题 → `python send.py --msg \"CORRECTION: <具体问题>\"` 告知执行 agent。"
+            f"**不要调 report.py**，直接结束即可，下一轮会被自动 resume。"
         )
 
-        # 用户的 supervisor 提示词作为 system_prompt，确保被严格遵守
         sup_system_prompt = (
-            f"You are a strict supervisor reviewing an AI agent's work. "
-            f"Your job is to verify that the agent's output meets ALL of the following criteria:\n\n"
+            f"你是严格审查 AI agent 工作的监督者。\n"
+            f"验证 agent 产出是否满足以下所有标准：\n\n"
             f"{run_info.supervisor}\n\n"
-            f"Be critical and thorough. If anything is wrong or missing, "
-            f"reply with CORRECTION and specific feedback. "
-            f"Only reply PASS if every criterion is fully satisfied. "
-            f"Be concise and specific in your feedback."
+            f"Be critical and thorough.\n"
+            f"All criteria met → `python report.py --result \"PASS\"`\n"
+            f"Issues found → `python send.py --msg \"CORRECTION: <feedback>\"` to the agent.\n"
+            f"Do NOT call report.py after sending feedback. Just exit.\n"
+            f"You will be resumed automatically for next review round."
         )
 
-        # 复用 supervisor 会话：首次生成 session_id 并 launch，后续 resume 同一会话
-        sup_session_id = getattr(run_info, '_supervisor_session_id', None)
-        if not sup_session_id:
-            sup_session_id = str(uuid.uuid4())
-            object.__setattr__(run_info, '_supervisor_session_id', sup_session_id)
-            resume = None
-        else:
-            resume = sup_session_id
-
-        try:
-            handle = self._backend.launch(
-                prompt=supervisor_prompt,
-                model=run_info.model,
-                session_id=sup_session_id,
-                resume_session=resume,
-                system_prompt=sup_system_prompt,
-                cwd=self.project_root,
-            )
-            output_parts = []
-            for ev in self._backend.stream(handle):
-                t = ev.get("text", "")
-                if t:
-                    output_parts.append(t)
-            handle.wait()
-            response = "".join(output_parts).strip()
-        except Exception as e:
-            logger.warning(f"[{run_info.run_id[:8]}] Supervisor failed: {e}")
-            return False
-
-        logger.info(f"[{run_info.run_id[:8]}] Supervisor response: {response[:200]}")
-
-        if response.upper().startswith("PASS"):
-            run_info.add_text_line("[Agent OS] Supervisor: task complete", kind="system")
-            run_info.goal_retries = self.MAX_GOAL_RETRIES  # 标记完成
-            run_info.goal = None
-            return False  # 不 resume，让正常流程继续
-
-        if response.upper().startswith("CORRECTION:"):
-            correction = response.split("CORRECTION:", 1)[1].strip()
-            max_retries = getattr(run_info, '_max_goal_retries', None) or self.MAX_GOAL_RETRIES
-            run_info.add_text_line(
-                f"[Agent OS] Supervisor correction: {correction[:200]}", kind="system"
-            )
-            feedback = (
-                f"Your supervisor reviewed your work and has feedback:\n\n"
-                f"{correction}\n\n"
-                f"Please address this feedback and continue. This is review "
-                f"{run_info.goal_retries}/{max_retries}."
-            )
-            self.continue_run(run_info.run_id, feedback, source="os")
-            self._mark_dirty()
-            return True  # 已 resume
-
-        # CONTINUE 或其他 → 放行
-        run_info.add_text_line("[Agent OS] Supervisor: continue", kind="system")
-        return False
+        sup_run_id = self.start_run(
+            prompt=supervisor_prompt,
+            agent_name=f"supervisor-{run_info.run_id[:6]}",
+            parent_run_id=run_info.run_id,
+            interactive=False,
+            system_prompt=sup_system_prompt,
+            model=run_info.model,
+            task_type="generative",
+            env_extras={"AGENT_OS_PARENT_RUN_ID": run_info.run_id},
+        )
+        logger.info(
+            f"[{run_info.run_id[:8]}] Supervisor spawned: {sup_run_id[:8]}, "
+            f"waiting for supervisor review"
+        )
+        return sup_run_id
 
     def _evaluate_goal(self, run_info: RunInfo) -> tuple[bool, str]:
         """评估 agent 是否达成了 goal。返回 (is_met, reason)。
@@ -1648,14 +1660,26 @@ class ProcessManager:
                 logger.debug(f"[{run_info.run_id[:8]}] Goal auto-fill failed: {e}")
         
         # === Supervisor / Goal 二选一 ===
-        # 有 supervisor 就走 supervisor，不走 goal
         if run_info.supervisor and not run_info.interactive \
                 and run_info.status == RunStatus.COMPLETED:
-            handled = self._run_supervisor(run_info)
-            if handled:
+            existing_sup = getattr(run_info, '_active_supervisor', None)
+            # 已有 supervisor session → resume 同一会话，继续审查
+            if existing_sup and existing_sup in self.runs:
+                sup_ri = self.runs[existing_sup]
+                context = self._build_work_context(run_info)
+                feedback = f"## Agent 新一轮产出\n\n{context[:8000]}\n\n请继续审查。满意后 report.py --result \"PASS\""
+                logger.info(f"[{run_info.run_id[:8]}] Resuming supervisor {existing_sup[:8]} for next round")
+                self.continue_run(existing_sup, feedback, source="os")
+                object.__setattr__(run_info, '_waiting_supervisor', existing_sup)
                 return
-            # Supervisor PASS/CONTINUE 后直接 return，不继续走 Goal
-            return
+            # 首次创建 supervisor
+            sup_run_id = self._spawn_supervisor(run_info)
+            if sup_run_id:
+                object.__setattr__(run_info, '_active_supervisor', sup_run_id)
+                object.__setattr__(run_info, '_waiting_supervisor', sup_run_id)
+                run_info.add_text_line("[Agent OS] Waiting for supervisor review...", kind="system")
+                return
+            run_info.supervisor = None
 
         # === Goal 评估（仅对 generative agent 生效） ===
         max_retries = getattr(run_info, '_max_goal_retries', None) or self.MAX_GOAL_RETRIES
@@ -1864,9 +1888,9 @@ class ProcessManager:
         # 工作目录：子 agent 继承父 agent 的；根 agent 新建
         elif "AGENT_OS_WORKSPACE" not in env:
             dir_name = sanitize_workspace_name(workspace_name) if workspace_name else run_id
-            workspace_path = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)), "workspaces", dir_name
-            )
+            # 上溯到 .agent_os/ 根目录，与 dag.py router 的 start_dag 保持一致
+            _aos_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            workspace_path = os.path.join(_aos_root, "workspaces", dir_name)
             reused = os.path.isdir(workspace_path)
             os.makedirs(workspace_path, exist_ok=True)
             env["AGENT_OS_WORKSPACE"] = workspace_path
@@ -1938,7 +1962,8 @@ class ProcessManager:
             "to spawn child agents. Sub-agents share your workspace.\n"
             "- report.py: `python .agent_os/report.py --result \"<summary>\"`\n"
             "  Mark your task as complete. Your parent agent will be resumed.\n"
-            "- send_message: use the SendMessage tool to send progress updates to your parent agent.\n"
+            "- send.py: `python .agent_os/send.py --msg \"<message>\"`\n"
+            "  Send progress updates to your parent agent.\n"
         )
 
     @staticmethod
@@ -1954,6 +1979,27 @@ class ProcessManager:
 
         task_prompt = task_prompt.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
 
+        if task_type == "interactive":
+            completion = (
+                "## How to Complete\n\n"
+                "You are an **interactive** agent. Your task requires user input or confirmation.\n"
+                "When ready for user review, inform the user what you've done and what input "
+                "you need. The user will click **Done** in the dashboard to mark your task as "
+                "complete.\n"
+                "- ⚠️ Do NOT call report.py — it will be ignored. Only the Done button completes you.\n"
+                "- If the user has already provided input, you may still need to wait for Done.\n\n"
+            )
+        else:
+            completion = (
+                "## How to Complete\n\n"
+                "You are a **generative** agent. You work autonomously and decide when to finish.\n"
+                "When your task is complete, you **must** call `python report.py "
+                "--result \"<summary>\"` to report your results. Without this, your task will be "
+                "marked as **failed** even if the work is done.\n"
+                "- ⚠️ report.py is MANDATORY for completion. The process exiting alone is not enough.\n"
+                "- The user can also click **Done** to manually complete you at any time.\n\n"
+            )
+
         base = (
             "You are a sub-agent running under Agent OS.\n\n"
             "## Workspace\n\n"
@@ -1961,15 +2007,14 @@ class ProcessManager:
             "This is the persistent file memory for the entire task — "
             "all agents in this pipeline read and write to this same directory. "
             "Files you create here will be accessible to downstream agents.\n\n"
-            "## Agent Types (for spawning children)\n\n"
-            "- generative: runs autonomously, calls report.py when done\n"
-            "- interactive: waits for user to click Done in the dashboard\n\n"
+            + completion +
             "## Available Tools\n\n"
             "- Create sub-agents: use the Task tool (subagent_type=generative|interactive) "
             "for further parallel work.\n"
-            "- report.py: `python .agent_os/report.py --result \"<summary>\"`\n"
+            "- report.py: `python report.py --result \"<summary>\"`\n"
             "  Call this when your task is done. Your parent agent will be resumed.\n"
-            "- send_message: use the SendMessage tool to send progress updates to your parent agent."
+            "- send.py: `python send.py --msg \"<message>\"`\n"
+            "  Send progress updates to your parent agent."
         )
         if task_prompt:
             base += f"\n## Task\n{task_prompt}\n"
@@ -2040,18 +2085,17 @@ class ProcessManager:
                 self._mark_dirty()
             elif run_info.status == RunStatus.RUNNING:
                 if run_info.interactive:
+                    # interactive: 只有用户点 Done 才算完成，进程退出继续等
                     logger.debug(f"[{run_info.run_id[:8]}] Interactive - staying running")
-                else:
-                    if not run_info.reported_result and hasattr(run_info, '_fallback_result') and run_info._fallback_result:
-                        run_info.reported_result = run_info._fallback_result
-                        logger.debug(f"[{run_info.run_id[:8]}] Using fallback_result")
+                elif run_info.reported_result:
+                    # generative: 已通过 report.py 汇报结果，正常结束
                     run_info.status = (
                         RunStatus.COMPLETED if (session.returncode or 0) == 0
                         else RunStatus.FAILED
                     )
                     run_info.completed_at = datetime.now()
 
-                    # DAG 状态更新：自然完成时也标记 step 为 done
+                    # DAG 状态更新
                     if run_info.step_id and run_info.workspace_path:
                         try:
                             dag = dp.load_dag(run_info.workspace_path)
@@ -2075,13 +2119,47 @@ class ProcessManager:
                     if run_info.workspace_path and not run_info._recorded:
                         run_info._recorded = True
                         try:
-                            final = run_info.reported_result or run_info._fallback_result or "(无输出)"
+                            final = run_info.reported_result or "(无输出)"
                             self.recorder.run_done(
                                 run_id=run_info.run_id, result=final,
                                 workspace_path=run_info.workspace_path,
                             )
                         except Exception:
                             pass
+                elif run_info.parent_run_id:
+                    # 检查是否是活跃 supervisor（通过 session 持久化，reported_result 可能不设）
+                    parent_ri = self.runs.get(run_info.parent_run_id)
+                    if parent_ri and getattr(parent_ri, '_active_supervisor', None) == run_info.run_id:
+                        logger.info(
+                            f"[{run_info.run_id[:8]}] Supervisor exited without report.py, "
+                            f"will be resumed next round"
+                        )
+                        # 不标状态，run_info 保留在 runs 中供下次 continue_run
+                    else:
+                        # DAG step 子 agent：必须通过 report.py 完成
+                        logger.warning(
+                            f"[{run_info.run_id[:8]}] Agent exited without calling report.py "
+                            f"(code={session.returncode}), marking failed"
+                        )
+                        run_info.add_text_line(
+                            "[Agent OS] Agent process exited without calling report.py — step failed",
+                            kind="error",
+                        )
+                        run_info.status = RunStatus.FAILED
+                    run_info.completed_at = datetime.now()
+                    self._on_run_completed(run_info)
+                else:
+                    # 根 agent（调度 agent / 用户会话）：进程退出即完成
+                    logger.info(
+                        f"[{run_info.run_id[:8]}] Root agent exited "
+                        f"(code={session.returncode}), auto-completing"
+                    )
+                    run_info.status = (
+                        RunStatus.COMPLETED if (session.returncode or 0) == 0
+                        else RunStatus.FAILED
+                    )
+                    run_info.completed_at = datetime.now()
+                    logger.info(f"[{run_info.run_id[:8]}] Marked {run_info.status.value}")
             elif run_info.status == RunStatus.WAITING:
                 all_children_done = True
                 for spawn_req in self.spawn_requests.values():
@@ -2129,4 +2207,4 @@ class ProcessManager:
 
         finally:
             if run_info._loop and run_info._new_output_event:
-                run_info._loop.call_soon_threadsafe(run_info._new_output_event.set)
+                run_info._new_output_event.set()

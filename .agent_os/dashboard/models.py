@@ -35,7 +35,8 @@ class SpawnTask(BaseModel):
     prompt: str
     agent_name: str | None = None
     type: str = "generative"  # "generative" or "interactive"
-    agent_type: str | None = None  # 兼容调度 agent 可能误传的字段名
+    agent_type: str | None = None  # 兼容旧字段名
+    subagent_type: str | None = None  # codebuddy Task 工具实际传的字段名
     model: str | None = None
     step_id: str | None = None  # DAG step 标识，OS 据此打 [step:<id>] commit
     goal: str | None = None  # DAG step 的 goal，透传给子 agent
@@ -43,10 +44,11 @@ class SpawnTask(BaseModel):
 
     @model_validator(mode="after")
     def resolve_type(self):
-        """如果 type 为空/默认值，但 agent_type 有值，则用 agent_type 代替。"""
-        if not self.type or self.type == "generative":
-            if self.agent_type:
-                self.type = self.agent_type
+        """codebuddy Task 工具传 subagent_type，统一到 type 字段。"""
+        if self.subagent_type:
+            self.type = self.subagent_type
+        elif self.agent_type:
+            self.type = self.agent_type
         return self
 
 

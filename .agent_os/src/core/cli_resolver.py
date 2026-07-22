@@ -115,8 +115,15 @@ def write_models_cache_file(models: list[str]) -> None:
 
 
 def parse_models_from_cli_inner(cli_prefix: list[str]) -> list[str]:
-    """运行 <cli> --help 解析模型列表（独立函数，供 backend 复用）。"""
+    """运行 CLI 解析模型列表（独立函数，供 backend 复用）。
+
+    策略：
+    1. 先尝试 --help 解析（claude CLI: "Currently supported: (m1, m2)"）
+    2. 失败则通过 -p "/model" 交互获取（codebuddy CLI）
+    """
     models: list[str] = []
+
+    # 策略1：--help 解析（claude CLI 旧格式）
     try:
         cmd = list(cli_prefix) + ["--help"]
         proc = subprocess.run(
@@ -132,13 +139,36 @@ def parse_models_from_cli_inner(cli_prefix: list[str]) -> list[str]:
         if not models:
             logger.warning("parse_models_from_cli: failed to parse models from --help output")
     except Exception as e:
-        logger.warning(f"parse_models_from_cli failed: {e}")
+        logger.warning(f"parse_models_from_cli --help failed: {e}")
+
+    # 策略2：-p "/model" 交互获取（codebuddy CLI）
+    if not models:
+        try:
+            cmd = list(cli_prefix) + ["-p", "/model", "--output-format", "text"]
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True,
+                encoding="utf-8", errors="replace",
+                timeout=60, shell=False, stdin=subprocess.DEVNULL,
+            )
+            text = proc.stdout or ""
+            # 匹配: - **modelname** — description 或 * **modelname** —
+            model_matches = re.findall(r'[-*/]\s*\*{0,2}(\w+)\*{0,2}\s*[—–-]', text)
+            if model_matches:
+                models = [m for m in model_matches if m.lower() != "model"]
+            if models:
+                logger.info(f"parse_models_from_cli: parsed via /model: {models}")
+            else:
+                logger.warning("parse_models_from_cli: /model fallback returned no models")
+        except Exception as e:
+            logger.warning(f"parse_models_from_cli /model fallback failed: {e}")
+
     return models
 
 
 def parse_models_from_cli(pm) -> list[str]:
     """运行 <cli> --help 解析模型列表（兼容旧接口）。"""
-    return parse_models_from_cli_inner(pm.cli_prefix)
+    cli_prefix = resolve_node_cli(pm.cli_command)
+    return parse_models_from_cli_inner(cli_prefix)
 
 
 def list_models(pm, refresh: bool = False) -> list[str]:

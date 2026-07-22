@@ -1,0 +1,17 @@
+{
+  "name": "测试监督者",
+  "description": "端到端测试 supervisor CORRECTION 场景",
+  "steps": [
+    {
+      "id": "test_step",
+      "name": "测试步骤",
+      "prompt": "输出一句话: goodbye world，然后调用 report.py --result done",
+      "depends_on": [],
+      "agent_name": null,
+      "model": null,
+      "type": "generative",
+      "supervisor": "检查输出是否包含 hello world。如果包含则PASS，否则send.py --msg 'CORRECTION: 需要输出hello world而不是goodbye world，请修改后重新report'",
+      "status": "pending"
+    }
+  ]
+}

@@ -302,6 +302,28 @@ async def send_message(run_id: str, req: SendMsgRequest):
     from datetime import datetime
     run_info.messages.append({"time": datetime.now().isoformat(), "msg": req.msg})
     run_info.add_event("send", text=req.msg)
+
+    # 如果 agent 正在等待 supervisor 审查，收到消息后 resume
+    waiting_sup_id = getattr(run_info, '_waiting_supervisor', None)
+    if waiting_sup_id:
+        msg_upper = req.msg.strip().upper()
+        if msg_upper.startswith("PASS"):
+            # 监督通过：清除状态，触发 _on_run_completed 做 spawn resolution
+            object.__setattr__(run_info, '_waiting_supervisor', None)
+            run_info.supervisor = None
+            run_info.add_text_line("[Agent OS] Supervisor: PASS — task complete", kind="system")
+            if pm:
+                pm._on_run_completed(run_info)
+                pm._mark_dirty()
+        elif msg_upper.startswith("CORRECTION"):
+            correction = req.msg.strip()
+            # 仅清除等待状态，保留 supervisor 字段以便下轮 resume 同一 supervisor
+            object.__setattr__(run_info, '_waiting_supervisor', None)
+            run_info.add_text_line(f"[Agent OS] Supervisor correction: {correction[:200]}", kind="system")
+            if pm:
+                pm.continue_run(run_id, correction, source="os")
+                pm._mark_dirty()
+
     return JSONResponse({"ok": True})
 
 

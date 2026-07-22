@@ -63,6 +63,7 @@ def save_runs_to_disk(pm) -> None:
 
     使用 UPSERT 语义：已存在的 run_id 更新，不存在的插入。
     数据库写入天然原子，不再需要 tmp 文件 + os.replace。
+    保存后执行 WAL checkpoint 确保数据落盘到主 DB 文件。
     """
     try:
         conn = pm._db_conn if hasattr(pm, '_db_conn') and pm._db_conn else _get_connection(pm)
@@ -70,6 +71,7 @@ def save_runs_to_disk(pm) -> None:
             pm._db_conn = conn
 
         now = datetime.now().isoformat()
+        saved = 0
         with conn:
             for ri in pm.runs.values():
                 ws = ri.workspace_path or "_global"
@@ -84,8 +86,64 @@ def save_runs_to_disk(pm) -> None:
                            updated_at=excluded.updated_at""",
                     (ri.run_id, ws, ri.status.value, _json.dumps(data, ensure_ascii=False), now)
                 )
+                saved += 1
+        # WAL checkpoint：确保数据写入主 DB 文件，防止重启丢失
+        try:
+            conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        except Exception:
+            pass
+        if saved > 0:
+            logger.info(f"save_runs: {saved} runs persisted to sqlite")
     except Exception as e:
         logger.error(f"save_runs failed: {e}")
+
+
+def _restore_events_with_jsonl(pm, ri, r, os_events: list) -> None:
+    """合并 jsonl 会话记录和 OS 注入事件，按 seq 排序存入 output_events。"""
+    try:
+        cwd = ri.workspace_path or pm.project_root
+        jsonl_path = pm._backend.get_session_path(ri.session_id, cwd) if ri.session_id else None
+    except Exception:
+        jsonl_path = None
+
+    events: list[dict] = []
+
+    # 1. 从 jsonl 读取事件，按行号分配 seq（每行一个 stream-json 事件）
+    if jsonl_path and os.path.exists(jsonl_path):
+        try:
+            from ..core.stream_parser import parse_stream_json_events
+            with open(jsonl_path, "r", encoding="utf-8", errors="replace") as f:
+                seq = 1
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    for ev in parse_stream_json_events(line):
+                        ev["seq"] = seq
+                        ev["_src"] = "jsonl"
+                        events.append(ev)
+                        seq += 1
+        except Exception as e:
+            logger.warning(f"restore jsonl for {ri.run_id[:8]}: {e}")
+
+    # 2. 加入 OS 注入事件
+    for e in os_events:
+        e["_src"] = "os"
+        events.append(e)
+
+    # 3. 按 seq 排序
+    events.sort(key=lambda e: e.get("seq", 0))
+
+    # 4. 写入 output_events
+    for e in events:
+        ri.output_events.append(e)
+    ri._event_seq = max(
+        ri._event_seq,
+        max((e.get("seq", 0) for e in events), default=0),
+    )
+    if events:
+        logger.debug(f"restored {len(events)} events for {ri.run_id[:8]} "
+                     f"({len(os_events)} OS, jsonl={jsonl_path is not None})")
 
 
 def load_runs_from_disk(pm) -> None:
@@ -152,8 +210,10 @@ def load_runs_from_disk(pm) -> None:
             )
             ri._fallback_result = r.get("fallback_result")
             ri._event_seq = r.get("event_seq", 0)
-            # output_events/output_lines 不再持久化，由 jsonl 维护
             ri.turn_markers = r.get("turn_markers", [])
+            # 恢复 OS 注入事件并尝试合并 jsonl 会话记录
+            os_events = r.get("os_events", [])
+            _restore_events_with_jsonl(pm, ri, r, os_events)
             pm.runs[ri.run_id] = ri
             total += 1
 

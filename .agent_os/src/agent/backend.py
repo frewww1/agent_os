@@ -302,10 +302,6 @@ class NativeBackend(BaseAgentBackend):
             cmd.extend(["--session-id", session_id])
         if system_prompt:
             cmd.extend(["--append-system-prompt", system_prompt])
-        # Task Hook：从环境变量读取 hook 配置（替代 MCP）
-        hook_config = (env or {}).get("AGENT_OS_HOOK_CONFIG", "")
-        if hook_config and os.path.exists(hook_config):
-            cmd.extend(["--hooks", hook_config])
 
         process = subprocess.Popen(
             cmd,

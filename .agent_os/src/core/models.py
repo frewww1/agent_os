@@ -106,7 +106,10 @@ class RunInfo(BaseModel):
         self.add_event(kind, text=line)
 
     def to_jsonable(self) -> dict:
-        """导出为可 JSON 序列化的字典（不包含 output_events/output_lines，这些由 jsonl 维护）。"""
+        """导出为可 JSON 序列化的字典（不包含 jsonl 事件，只保留 OS 注入事件）。"""
+        # OS 注入事件（jsonl 中没有的）：system, error, turn, send, rewind, user_done
+        _OS_KINDS = {"system", "error", "turn", "send", "rewind", "user_done"}
+        os_events = [e for e in self.output_events if e.get("kind") in _OS_KINDS]
         return {
             "run_id": self.run_id,
             "prompt": self.prompt,
@@ -134,6 +137,7 @@ class RunInfo(BaseModel):
             "goal_retries": self.goal_retries,
             "plan_content": self.plan_content,
             "plan_file": self.plan_file,
+            "os_events": os_events,
         }
 
 

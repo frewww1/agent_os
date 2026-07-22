@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent OS DAG 流程可视化</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
+  header { background: linear-gradient(135deg, #1e293b, #0f172a); padding: 20px 24px; text-align: center; border-bottom: 2px solid #334155; }
+  header h1 { font-size: 1.4rem; background: linear-gradient(90deg, #38bdf8, #818cf8); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  .container { max-width: 1200px; margin: 0 auto; padding: 16px; }
+  .section { background: #1e293b; border-radius: 12px; margin-bottom: 24px; overflow: hidden; border: 1px solid #334155; }
+  .section-header { background: #0f172a; padding: 12px 20px; border-bottom: 1px solid #334155; display: flex; justify-content: space-between; align-items: center; }
+  .section-header h2 { font-size: 1.1rem; }
+  .section-header .plan h2 { color: #f59e0b; }
+  .section-header .dev h2 { color: #10b981; }
+  .badge { background: #334155; padding: 3px 10px; border-radius: 14px; font-size: 0.75rem; color: #94a3b8; }
+  .arrow-down { text-align: center; padding: 0 0 8px 0; font-size: 1.5rem; color: #475569; }
+  .mermaid-wrap { padding: 16px; overflow-x: auto; }
+  .legend { display: flex; gap: 20px; padding: 10px 20px; border-top: 1px solid #334155; flex-wrap: wrap; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 0.72rem; color: #94a3b8; }
+  .legend-dot { width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Agent OS — SGR DAG 流水线</h1>
+</header>
+
+<div class="container">
+
+  <!-- ========== 策划分析 ========== -->
+  <div class="section">
+    <div class="section-header plan">
+      <h2>📋 策划需求分析 — sgr_plan_pipeline</h2>
+      <span class="badge">5 Steps · 2 Supervisors</span>
+    </div>
+    <div class="mermaid-wrap">
+      <div class="mermaid">
+graph TB
+    S01["① 获取需求文档<br/>req_init<br/>📄 requirement.md"]
+    S02["② 标准化需求<br/>req_standardization<br/>📄 requirement_std.md"]
+    S03["③ 服务端分析<br/>req_svr_analysis<br/>📄 requirement_analysis.md"]
+    S04["④ 拆分子需求<br/>req_decompose<br/>📄 sub_requirements.md<br/>🔀 拆分为 N 个子需求"]
+    S05["⑤ 客户端数据分析<br/>client_data_analysis<br/>📄 client_data.md"]
+
+    SV02["👁️ 监督者<br/>审查标准化需求"]
+    SV03["👁️ 监督者<br/>审查服务端分析"]
+
+    S01 --> S02 --> S03 --> S04 --> S05
+    SV02 -.-|"监督"| S02
+    SV03 -.-|"监督"| S03
+
+    classDef interactive fill:#92400e,stroke:#f59e0b,stroke-width:1.5px,color:#fef3c7
+    classDef generative fill:#065f46,stroke:#10b981,stroke-width:1.5px,color:#d1fae5
+    classDef supervisorNode fill:#7f1d1d,stroke:#ef4444,stroke-width:1px,stroke-dasharray:3 2,color:#fecaca,rx:10,ry:10
+
+    class S01,S04,S05 interactive
+    class S02,S03 generative
+    class SV02,SV03 supervisorNode
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== 分隔箭头 ========== -->
+  <div class="arrow-down">⬇️ 拆分后，每个子需求独立执行以下开发流水线 ⬇️</div>
+
+  <!-- ========== 开发交付 ========== -->
+  <div class="section">
+    <div class="section-header dev">
+      <h2>⚙️ 开发交付 — sgr_full_pipeline（每个子需求 × N）</h2>
+      <span class="badge">18 Steps · 9 Supervisors</span>
+    </div>
+    <div class="mermaid-wrap">
+      <div class="mermaid">
+graph TB
+
+    subgraph COL1["需求与方案"]
+        direction TB
+        S06["⑥ 初始化变更<br/>init_change<br/>📄 .change_name"]
+        S07["⑦ 需求探索<br/>explore_req<br/>📖 确认范围"]
+        S08["⑧ 提取技术点<br/>extract_tech<br/>📄 tech-decisions.md"]
+        S09["⑨ 讨论技术点<br/>discuss_tech<br/>📄 discussions/* ✏️更新"]
+        SV08["👁️ 审查技术点"]
+
+        S06 --> S07 --> S08 --> S09
+        SV08 -.- S08
+    end
+
+    subgraph COL2["OpenSpec 工件"]
+        direction TB
+        S10["⑩ 生成 proposal<br/>gen_artifact_1<br/>📄 proposal.md"]
+        S11["⑪ 审查 proposal<br/>review_1 ✅"]
+        S12["⑫ 生成 design<br/>gen_artifact_2<br/>📄 design.md"]
+        S13["⑬ 审查 design<br/>review_2 ✅"]
+        S14["⑭ 生成 specs<br/>gen_artifact_3<br/>📁 specs/"]
+        S15["⑮ 审查 specs<br/>review_3 ✅"]
+        S16["⑯ 生成 tasks<br/>gen_artifact_4<br/>📄 tasks.md"]
+        S17["⑰ 审查 tasks<br/>review_4 ✅"]
+
+        SV10["👁️ 审查 proposal"]
+        SV12["👁️ 审查 design"]
+        SV14["👁️ 审查 specs"]
+        SV16["👁️ 审查 tasks"]
+
+        S10 --> S11 --> S12 --> S13 --> S14 --> S15 --> S16 --> S17
+
+        SV10 -.- S10
+        SV12 -.- S12
+        SV14 -.- S14
+        SV16 -.- S16
+    end
+
+    subgraph COL3["实现与验证"]
+        direction TB
+        S18["⑱ 实现代码<br/>apply_code<br/>💻 代码文件"]
+        S19["⑲ 验证实现<br/>verify_impl<br/>✅ 验证报告"]
+        SV18["👁️ 审查代码"]
+        SV19["👁️ 审查验证"]
+
+        S18 --> S19
+        SV18 -.- S18
+        SV19 -.- S19
+    end
+
+    subgraph COL4["测试"]
+        direction TB
+        S20["⑳ 测试设计<br/>gen_tests_design<br/>📄 test-cases.md"]
+        S21["㉑ 测试实现<br/>gen_tests_impl<br/>📄 test-plan.md"]
+        S22["㉒ 执行测试<br/>run_tests<br/>🔄逐用例→失败spawn fix<br/>→通过则下一个→✅全部通过"]
+        SV20["👁️ 审查测试设计"]
+        SV21["👁️ 审查测试计划"]
+
+        S20 --> S21 --> S22
+        SV20 -.- S20
+        SV21 -.- S21
+    end
+
+    S09 --> S10
+    S17 --> S18
+    S19 --> S20
+    S06 ~~~ S10
+    S10 ~~~ S18
+    S18 ~~~ S20
+
+    classDef interactive fill:#92400e,stroke:#f59e0b,stroke-width:1.5px,color:#fef3c7
+    classDef generative fill:#065f46,stroke:#10b981,stroke-width:1.5px,color:#d1fae5
+    classDef supervisorNode fill:#7f1d1d,stroke:#ef4444,stroke-width:1px,stroke-dasharray:3 2,color:#fecaca,rx:10,ry:10
+
+    class S06,S07,S09,S11,S13,S15,S17 interactive
+    class S08,S10,S12,S14,S16,S18,S19,S20,S21,S22 generative
+    class SV08,SV10,SV12,SV14,SV16,SV18,SV19,SV20,SV21 supervisorNode
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== 图例 ========== -->
+  <div class="section">
+    <div class="legend">
+      <div class="legend-item"><div class="legend-dot" style="background:#f59e0b"></div> Interactive（需用户确认）</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#10b981"></div> Generative（自动生成）</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#ef4444;border:1.5px dashed #ef4444;border-radius:10px"></div> 监督者</div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'dark',
+    themeVariables: {
+      fontFamily: 'Segoe UI, system-ui, sans-serif',
+      primaryColor: '#1e293b',
+      primaryTextColor: '#e2e8f0',
+      primaryBorderColor: '#334155',
+      lineColor: '#475569',
+      fontSize: '11px'
+    },
+    flowchart: {
+      useMaxWidth: true,
+      htmlLabels: true,
+      curve: 'basis',
+      nodeSpacing: 15,
+      rankSpacing: 35,
+      padding: 6
+    }
+  });
+</script>
+
+</body>
+</html>
