@@ -3,9 +3,10 @@ import json
 def parse_cli_session_jsonl(line: str) -> list[dict]:
     """解析 CodeBuddy CLI 会话 jsonl 行，转为前端事件格式。
     
-    CodeBuddy session 格式 vs stream-json 格式完全不同：
-    - session: {"type":"message","role":"user","content":[{"type":"input_text","text":"..."}]}
-    - stream:  {"kind":"text","text":"..."}
+    事件格式与 stream_parser 输出一致：
+    - tool_use:  {"kind":"tool_use","tool":"Bash","summary":"ls"}
+    - tool_result: {"kind":"tool_result","text":"...","truncated":true}
+    - reasoning: {"kind":"thinking","text":"..."}
     """
     try:
         obj = json.loads(line)
@@ -16,6 +17,34 @@ def parse_cli_session_jsonl(line: str) -> list[dict]:
         return _parse_session_obj(obj)
     except Exception:
         return []
+
+
+def _parse_args(args_raw) -> dict:
+    """解析 arguments，支持 JSON 字符串和 dict。"""
+    if isinstance(args_raw, dict):
+        return args_raw
+    if isinstance(args_raw, str):
+        try:
+            return json.loads(args_raw)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    return {}
+
+
+def _tool_summary(tool_name: str, inp: dict) -> str:
+    """根据工具名提取有意义的摘要。"""
+    if tool_name == "Bash":
+        return inp.get("command", "") or json.dumps(inp, ensure_ascii=False)
+    if tool_name in ("Read", "Write", "Edit"):
+        return inp.get("file_path", "")
+    if tool_name == "Grep":
+        return inp.get("pattern", "")
+    if tool_name == "Glob":
+        return inp.get("pattern", "")
+    if tool_name == "TodoWrite":
+        todos = inp.get("todos", [])
+        return f"{len(todos)} todo(s)" if isinstance(todos, list) else ""
+    return json.dumps(inp, ensure_ascii=False)[:200]
 
 
 def _parse_session_obj(obj: dict) -> list[dict]:
@@ -46,14 +75,13 @@ def _parse_session_obj(obj: dict) -> list[dict]:
         if not text:
             text = obj.get("text", "")
         if text:
-            events.append({"kind": "text", "text": f"💭 {text}"})
+            events.append({"kind": "thinking", "text": text})
     
     elif typ == "function_call":
-        name = obj.get("name", "") or (obj.get("function", {}) or {}).get("name", "")
-        args = obj.get("arguments", "") or (obj.get("function", {}) or {}).get("arguments", "")
-        args_display = args if isinstance(args, str) else json.dumps(args, ensure_ascii=False)
-        events.append({"kind": "tool_use", "text": f"{name}({args_display[:100]})",
-                       "tool_name": name, "tool_input": args})
+        name = obj.get("name", "")
+        inp = _parse_args(obj.get("arguments", ""))
+        events.append({"kind": "tool_use", "tool": name,
+                       "summary": _tool_summary(name, inp)})
     
     elif typ == "function_call_result":
         output = obj.get("output", "")
@@ -62,7 +90,10 @@ def _parse_session_obj(obj: dict) -> list[dict]:
             output_text = output.get("text", "") or json.dumps(output, ensure_ascii=False)
         else:
             output_text = str(output) if output else ""
-        events.append({"kind": "tool_result", "text": output_text[:2000]})
+        truncated = len(output_text) > 800
+        if truncated:
+            output_text = output_text[:800] + "\n... (truncated)"
+        events.append({"kind": "tool_result", "text": output_text, "truncated": truncated})
     
     elif typ == "file-history-snapshot":
         pass

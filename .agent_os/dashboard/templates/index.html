@@ -658,6 +658,7 @@ function renderEvent(ev) {
     if (k === 'user_done') return renderUserDone(ev);
     if (k === 'error') return renderError(ev);
     if (k === 'system') return renderSystem(ev);
+    if (k === 'thinking') return renderThinking(ev);
     if (k === 'plan_pending') return renderPlanPending(ev);
     if (k === 'raw') return renderRaw(ev);
     return renderRaw(ev);
@@ -885,6 +886,20 @@ const TOOL_ICONS = {
 
 // 简单工具列表（summary 是单行参数，没必要大代码块）
 const INLINE_TOOLS = new Set(['Read', 'Grep', 'Glob']);
+
+function renderThinking(ev) {
+    const text = ev.text || '';
+    const card = el('details', 'msg msg-thinking');
+    const head = document.createElement('summary');
+    head.style.cssText = 'cursor:pointer;color:#888;font-size:0.85em;padding:2px 0;';
+    head.textContent = '💭 思考中...';
+    card.appendChild(head);
+    const body = el('div', 'thinking-body');
+    body.style.cssText = 'color:#999;font-size:0.85em;padding:4px 8px;border-left:3px solid #ccc;margin:4px 0;white-space:pre-wrap;';
+    body.textContent = text;
+    card.appendChild(body);
+    return card;
+}
 
 function renderToolUse(ev) {
     const summary = ev.summary || '';
