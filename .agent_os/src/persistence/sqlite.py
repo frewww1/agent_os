@@ -98,8 +98,18 @@ def save_runs_to_disk(pm) -> None:
         logger.error(f"save_runs failed: {e}")
 
 
-def _restore_events_with_jsonl(pm, ri, r, os_events: list) -> None:
-    """合并 jsonl 会话记录和 OS 注入事件，按 seq 排序存入 output_events。"""
+def _restore_events_with_jsonl(pm, ri, r, os_events_backup: list) -> None:
+    """恢复会话事件。优先用 SQLite 中保存的完整事件（新格式），
+    如果是旧格式（只有 os_events）则尝试从 jsonl 恢复。"""
+    full_events = r.get("events")
+    if full_events:
+        for e in full_events:
+            ri.output_events.append(e)
+        ri._event_seq = max((e.get("seq", 0) for e in full_events), default=0)
+        logger.info(f"restored {len(full_events)} events from sqlite for {ri.run_id[:8]}")
+        return
+
+    os_events = r.get("os_events", os_events_backup)
     try:
         cwd = ri.workspace_path or pm.project_root
         jsonl_path = pm._backend.get_session_path(ri.session_id, cwd) if ri.session_id else None
