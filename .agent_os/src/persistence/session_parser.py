@@ -1,4 +1,16 @@
 import json
+from datetime import datetime, timezone
+
+def _ts_from_obj(obj: dict) -> str:
+    """从 jsonl 的 timestamp (ms) 转为 ISO 格式 ts 字段。"""
+    ts_ms = obj.get("timestamp")
+    if ts_ms:
+        try:
+            return datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).isoformat()
+        except Exception:
+            pass
+    return datetime.now(timezone.utc).isoformat()
+
 
 def parse_cli_session_jsonl(line: str) -> list[dict]:
     """解析 CodeBuddy CLI 会话 jsonl 行，转为前端事件格式。
@@ -14,7 +26,11 @@ def parse_cli_session_jsonl(line: str) -> list[dict]:
         return []
     
     try:
-        return _parse_session_obj(obj)
+        events = _parse_session_obj(obj)
+        ts = _ts_from_obj(obj)
+        for ev in events:
+            ev.setdefault("ts", ts)
+        return events
     except Exception:
         return []
 
@@ -62,8 +78,12 @@ def _parse_session_obj(obj: dict) -> list[dict]:
                     text_parts.append(block.get("text", ""))
         text = "".join(text_parts)
         if text:
-            events.append({"kind": "text" if role == "assistant" else "prompt", 
-                           "text": text, "role": role})
+            if role == "assistant":
+                events.append({"kind": "text", "text": text, "role": "assistant",
+                               "source": "assistant"})
+            else:
+                events.append({"kind": "prompt", "text": text, "role": "user",
+                               "source": "user"})
     
     elif typ == "reasoning":
         raw_content = obj.get("rawContent", [])
