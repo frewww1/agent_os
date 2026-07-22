@@ -80,7 +80,7 @@ class Recorder:
         不碰 game 目录的 git 仓库（如果存在）。所有 commit/checkout/reset
         都在 .agent_os/ 独立仓库里进行，避免污染 game 仓库。
         """
-        self.BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+        self.BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         self._project_root = os.path.abspath(project_root) if project_root else None
         self._aos_repo = self.BASE_DIR  # BASE_DIR 就是 .agent_os/
         self._git_lock = threading.Lock()
