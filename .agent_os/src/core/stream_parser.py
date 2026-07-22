@@ -175,10 +175,15 @@ def parse_stream_json_events(line: str) -> list[dict]:
         inner_type = inner.get("type", "")
         if inner_type in ("content_block_start", "content_block_delta"):
             delta = inner.get("delta", {})
-            if delta.get("type") == "text_delta":
+            delta_type = delta.get("type", "")
+            if delta_type == "text_delta":
                 text = delta.get("text", "")
                 if text:
                     events.append({"kind": "text_delta", "text": text})
+            elif delta_type == "thinking_delta":
+                text = delta.get("thinking", "")
+                if text:
+                    events.append({"kind": "thinking_delta", "text": text})
         return events
 
     if msg_type == "assistant":

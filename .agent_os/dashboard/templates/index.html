@@ -650,6 +650,7 @@ function renderEvent(ev) {
     if (k === 'turn') return renderTurn(ev);
     if (k === 'prompt') return renderPrompt(ev);
     if (k === 'text_delta') return renderTextDelta(ev);
+    if (k === 'thinking_delta') return renderThinkingDelta(ev);
     if (k === 'text') return renderText(ev);
     if (k === 'tool_use') return renderToolUse(ev);
     if (k === 'tool_result') return renderToolResult(ev);
@@ -716,6 +717,7 @@ function detectLang(tool, summary) {
 }
 
 function renderTurn(ev) {
+    _clearThinking();
     const idx = ev.index || '?';
     const wrap = el('div', 'turn-divider');
     wrap.dataset.turnIdx = idx;
@@ -859,9 +861,15 @@ function renderTextDelta(ev) {
     return null; // 不追加新节点，已由 _ensureTypewriterCard 处理
 }
 
+function _clearThinking() {
+    _thinkingBuf = '';
+    if (_thinkingCard) { _thinkingCard.remove(); _thinkingCard = null; }
+}
+
 function renderText(ev) {
     _clearTypewriter();
     _typewriterBuf = '';
+    _clearThinking();
     const card = _typewriterCard || el('div', 'msg msg-text');
     // 清除旧内容
     card.innerHTML = '';
@@ -889,6 +897,17 @@ const INLINE_TOOLS = new Set(['Read', 'Grep', 'Glob']);
 
 function renderThinking(ev) {
     const text = ev.text || '';
+    // 如果已有流式 thinking card，替换为最终版本
+    if (_thinkingCard) { _thinkingCard.remove(); _thinkingCard = null; }
+    const card = _buildThinkingCard(text);
+    return card;
+}
+
+// 流式思考缓冲区
+let _thinkingCard = null;
+let _thinkingBuf = '';
+
+function _buildThinkingCard(text) {
     const card = el('details', 'msg msg-thinking');
     const head = document.createElement('summary');
     head.style.cssText = 'cursor:pointer;color:#888;font-size:0.85em;padding:2px 0;';
@@ -901,7 +920,20 @@ function renderThinking(ev) {
     return card;
 }
 
+function renderThinkingDelta(ev) {
+    _thinkingBuf += (ev.text || '');
+    if (!_thinkingCard) {
+        _thinkingCard = _buildThinkingCard(_thinkingBuf);
+        return _thinkingCard;
+    }
+    // 已存在则更新内容
+    const body = _thinkingCard.querySelector('.thinking-body');
+    if (body) body.textContent = _thinkingBuf;
+    return null;
+}
+
 function renderToolUse(ev) {
+    _clearThinking();
     const summary = ev.summary || '';
     const isWrite = ev.tool === 'Write' && ev.content !== undefined;
     const isEdit = ev.tool === 'Edit' && (ev.old_string !== undefined || ev.new_string !== undefined);
