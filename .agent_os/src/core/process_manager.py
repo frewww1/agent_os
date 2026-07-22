@@ -2166,6 +2166,7 @@ class ProcessManager:
                     )
                     run_info.completed_at = datetime.now()
                     logger.info(f"[{run_info.run_id[:8]}] Marked {run_info.status.value}")
+                    self._on_run_completed(run_info)
             elif run_info.status == RunStatus.WAITING:
                 all_children_done = True
                 for spawn_req in self.spawn_requests.values():
