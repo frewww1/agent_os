@@ -402,7 +402,7 @@ class ProcessManager:
             self._mark_dirty()
             return run_id
 
-        loop = asyncio.get_event_loop()
+        loop = self._loop  # 使用主事件循环，避免 reader 线程无 loop 报错
         # 计算深度：根 agent depth=0，子 agent 继承父 depth+1
         _depth = 0
         if parent_run_id and parent_run_id in self.runs:
