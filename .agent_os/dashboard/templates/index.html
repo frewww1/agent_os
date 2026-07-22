@@ -647,7 +647,7 @@ function jumpToBottom() {
 
 function renderEvent(ev) {
     const k = ev.kind;
-    if (k === 'turn') return renderTurn(ev);
+    if (k === 'turn') return null;  // 不渲染 Turn 分隔线
     if (k === 'prompt') return renderPrompt(ev);
     if (k === 'text_delta') return renderTextDelta(ev);
     if (k === 'thinking_delta') return renderThinkingDelta(ev);
@@ -716,63 +716,7 @@ function detectLang(tool, summary) {
     return '';
 }
 
-function renderTurn(ev) {
-    _clearThinking();
-    const idx = ev.index || '?';
-    const wrap = el('div', 'turn-divider');
-    wrap.dataset.turnIdx = idx;
-    wrap.appendChild(el('span', 'turn-line'));
-    const label = el('span', 'turn-label');
-    label.appendChild(el('span', 'turn-label-num', `Turn ${idx}`));
-    const collapseBtn = el('button', 'turn-collapse-btn');
-    collapseBtn.type = 'button';
-    collapseBtn.title = '折叠/展开本轮所有工具调用';
-    collapseBtn.textContent = '⊟ 折叠工具';
-    collapseBtn.dataset.collapsed = '0';
-    collapseBtn.style.display = 'none';  // 有工具时再显示
-    collapseBtn.onclick = (e) => {
-        e.stopPropagation();
-        toggleTurnTools(wrap, collapseBtn);
-    };
-    label.appendChild(collapseBtn);
-    wrap.appendChild(label);
-    wrap.appendChild(el('span', 'turn-line'));
-    _lastTurnEl = wrap;
-    return wrap;
-}
 
-let _lastTurnEl = null;
-
-function _showTurnCollapseBtn() {
-    if (!_lastTurnEl) return;
-    const btn = _lastTurnEl.querySelector('.turn-collapse-btn');
-    if (btn && btn.style.display === 'none') {
-        btn.style.display = '';
-    }
-}
-
-function toggleTurnTools(turnEl, btn) {
-    // 找到从此 turn 到下一个 turn 之间的所有 tool details
-    const tools = [];
-    let cur = turnEl.nextSibling;
-    while (cur && !(cur.classList && cur.classList.contains('turn-divider'))) {
-        if (cur.tagName === 'DETAILS' && (cur.classList.contains('msg-tool-use') || cur.classList.contains('msg-tool-result'))) {
-            tools.push(cur);
-        }
-        cur = cur.nextSibling;
-    }
-    if (tools.length === 0) return;
-    const collapsed = btn.dataset.collapsed === '1';
-    if (collapsed) {
-        tools.forEach(t => { t.open = true; });
-        btn.dataset.collapsed = '0';
-        btn.textContent = '⊟ 折叠工具';
-    } else {
-        tools.forEach(t => { t.open = false; });
-        btn.dataset.collapsed = '1';
-        btn.textContent = '⊞ 展开工具';
-    }
-}
 
 function renderPrompt(ev) {
     // OS 调度注入的 prompt（Turn 2+ 子 agent 完成后注入父 agent）→ 单独的卡片
@@ -945,7 +889,6 @@ function renderThinkingDelta(ev) {
 
 function renderToolUse(ev) {
     _clearThinking();
-    _showTurnCollapseBtn();
 
     const summary = ev.summary || '';
     const isWrite = ev.tool === 'Write' && ev.content !== undefined;
@@ -1100,7 +1043,6 @@ function renderWriteContent(content, filePath) {
 }
 
 function renderToolResult(ev) {
-    _showTurnCollapseBtn();
 
     const text = ev.text || '';
     const lines = text.split('\n');
