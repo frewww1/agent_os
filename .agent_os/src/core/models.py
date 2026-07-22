@@ -106,15 +106,9 @@ class RunInfo(BaseModel):
         self.add_event(kind, text=line)
 
     def to_jsonable(self) -> dict:
-        """导出为可 JSON 序列化的字典。保存所有事件到 SQLite，无需依赖 jsonl 恢复。"""
-        _MAX_TEXT = 2000
-        all_events = []
-        for e in self.output_events:
-            ev = dict(e)
-            text = ev.get("text", "")
-            if isinstance(text, str) and len(text) > _MAX_TEXT:
-                ev["text"] = text[:_MAX_TEXT] + "..."
-            all_events.append(ev)
+        """导出为可 JSON 序列化的字典。对话事件从 jsonl 恢复，只存 OS 注入事件。"""
+        _OS_KINDS = {"system", "error", "turn", "send", "rewind", "user_done"}
+        os_events = [dict(e) for e in self.output_events if e.get("kind") in _OS_KINDS]
         return {
             "run_id": self.run_id,
             "prompt": self.prompt,
@@ -142,7 +136,7 @@ class RunInfo(BaseModel):
             "goal_retries": self.goal_retries,
             "plan_content": self.plan_content,
             "plan_file": self.plan_file,
-            "events": all_events,
+            "os_events": os_events,
         }
 
 

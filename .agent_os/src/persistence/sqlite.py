@@ -99,16 +99,7 @@ def save_runs_to_disk(pm) -> None:
 
 
 def _restore_events_with_jsonl(pm, ri, r, os_events_backup: list) -> None:
-    """恢复会话事件。优先用 SQLite 中保存的完整事件（新格式），
-    如果是旧格式（只有 os_events）则尝试从 jsonl 恢复。"""
-    full_events = r.get("events")
-    if full_events:
-        for e in full_events:
-            ri.output_events.append(e)
-        ri._event_seq = max((e.get("seq", 0) for e in full_events), default=0)
-        logger.info(f"restored {len(full_events)} events from sqlite for {ri.run_id[:8]}")
-        return
-
+    """从 jsonl 恢复会话事件，合并 OS 注入事件。jsonl 由 CodeBuddy CLI 维护。"""
     os_events = r.get("os_events", os_events_backup)
     try:
         cwd = ri.workspace_path or pm.project_root
@@ -116,9 +107,6 @@ def _restore_events_with_jsonl(pm, ri, r, os_events_backup: list) -> None:
     except Exception as e:
         logger.warning(f"restore jsonl: get_session_path failed for {ri.run_id[:8]}: {e}")
         jsonl_path = None
-
-    if not jsonl_path:
-        logger.debug(f"restore: no jsonl path for {ri.run_id[:8]} (session={ri.session_id})")
 
     events: list[dict] = []
 
@@ -133,7 +121,6 @@ def _restore_events_with_jsonl(pm, ri, r, os_events_backup: list) -> None:
                     line = line.strip()
                     if not line:
                         continue
-                    # 先用 session 格式（CodeBuddy），失败则用 stream 格式（Claude）
                     parsed = parse_cli_session_jsonl(line)
                     if not parsed:
                         try:
@@ -148,24 +135,17 @@ def _restore_events_with_jsonl(pm, ri, r, os_events_backup: list) -> None:
                         seq += 1
         except Exception as e:
             logger.warning(f"restore jsonl parse for {ri.run_id[:8]}: {e}")
-    elif jsonl_path:
-        logger.debug(f"restore: jsonl not found for {ri.run_id[:8]}: {jsonl_path}")
 
-    # 2. 加入 OS 注入事件
+    # 2. 加入 OS 注入事件（system/error/turn/send/rewind/user_done）
     for e in os_events:
         e["_src"] = "os"
         events.append(e)
 
-    # 3. 按 seq 排序
+    # 3. 按 seq 排序后写入 output_events
     events.sort(key=lambda e: e.get("seq", 0))
-
-    # 4. 写入 output_events
     for e in events:
         ri.output_events.append(e)
-    ri._event_seq = max(
-        ri._event_seq,
-        max((e.get("seq", 0) for e in events), default=0),
-    )
+    ri._event_seq = max(ri._event_seq, max((e.get("seq", 0) for e in events), default=0))
     if events:
         logger.info(f"restored {len(events)} events for {ri.run_id[:8]} "
                      f"({len(os_events)} OS, jsonl={jsonl_path is not None})")
