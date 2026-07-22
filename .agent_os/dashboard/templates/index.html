@@ -724,12 +724,12 @@ function renderTurn(ev) {
     wrap.appendChild(el('span', 'turn-line'));
     const label = el('span', 'turn-label');
     label.appendChild(el('span', 'turn-label-num', `Turn ${idx}`));
-    // 折叠所有工具调用的快捷按钮
     const collapseBtn = el('button', 'turn-collapse-btn');
     collapseBtn.type = 'button';
     collapseBtn.title = '折叠/展开本轮所有工具调用';
     collapseBtn.textContent = '⊟ 折叠工具';
     collapseBtn.dataset.collapsed = '0';
+    collapseBtn.style.display = 'none';  // 有工具时再显示
     collapseBtn.onclick = (e) => {
         e.stopPropagation();
         toggleTurnTools(wrap, collapseBtn);
@@ -737,7 +737,18 @@ function renderTurn(ev) {
     label.appendChild(collapseBtn);
     wrap.appendChild(label);
     wrap.appendChild(el('span', 'turn-line'));
+    _lastTurnEl = wrap;
     return wrap;
+}
+
+let _lastTurnEl = null;
+
+function _showTurnCollapseBtn() {
+    if (!_lastTurnEl) return;
+    const btn = _lastTurnEl.querySelector('.turn-collapse-btn');
+    if (btn && btn.style.display === 'none') {
+        btn.style.display = '';
+    }
 }
 
 function toggleTurnTools(turnEl, btn) {
@@ -934,6 +945,8 @@ function renderThinkingDelta(ev) {
 
 function renderToolUse(ev) {
     _clearThinking();
+    _showTurnCollapseBtn();
+
     const summary = ev.summary || '';
     const isWrite = ev.tool === 'Write' && ev.content !== undefined;
     const isEdit = ev.tool === 'Edit' && (ev.old_string !== undefined || ev.new_string !== undefined);
@@ -1087,6 +1100,8 @@ function renderWriteContent(content, filePath) {
 }
 
 function renderToolResult(ev) {
+    _showTurnCollapseBtn();
+
     const text = ev.text || '';
     const lines = text.split('\n');
     const lineCount = lines.length;
