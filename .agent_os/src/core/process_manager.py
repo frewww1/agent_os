@@ -2189,20 +2189,20 @@ class ProcessManager:
                             RunStatus.COMPLETED if (session.returncode or 0) == 0
                             else RunStatus.FAILED
                         )
-                    run_info.completed_at = datetime.now()
-                    logger.info(f"[{run_info.run_id[:8]}] WAITING agent done, marked {run_info.status.value}")
-                    if run_info.workspace_path and not run_info._recorded:
-                        run_info._recorded = True
-                        try:
-                            final = run_info.reported_result or run_info._fallback_result or "(无输出)"
-                            self.recorder.run_done(
-                                run_id=run_info.run_id, result=final,
-                                workspace_path=run_info.workspace_path,
-                            )
-                        except Exception:
-                            pass
-                else:
-                    logger.info(f"[{run_info.run_id[:8]}] WAITING agent ended, children still running")
+                        run_info.completed_at = datetime.now()
+                        logger.info(f"[{run_info.run_id[:8]}] WAITING agent done, marked {run_info.status.value}")
+                        if run_info.workspace_path and not run_info._recorded:
+                            run_info._recorded = True
+                            try:
+                                final = run_info.reported_result or run_info._fallback_result or "(无输出)"
+                                self.recorder.run_done(
+                                    run_id=run_info.run_id, result=final,
+                                    workspace_path=run_info.workspace_path,
+                                )
+                            except Exception:
+                                pass
+                    else:
+                        logger.info(f"[{run_info.run_id[:8]}] WAITING agent ended, children still running")
             else:
                 logger.debug(f"[{run_info.run_id[:8]}] Status already {run_info.status.value}, skip exit handler")
 
