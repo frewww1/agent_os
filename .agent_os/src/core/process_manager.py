@@ -737,6 +737,7 @@ class ProcessManager:
                 object.__setattr__(parent_ri, '_waiting_supervisor', None)
 
                 if msg_upper.startswith("PASS"):
+                    object.__setattr__(run_info, '_supervisor_done', True)
                     object.__setattr__(parent_ri, '_active_supervisor', None)
                     parent_ri.supervisor = None
                     parent_ri.add_text_line("[Agent OS] Supervisor: PASS — task complete", kind="system")
@@ -2141,11 +2142,17 @@ class ProcessManager:
                 elif run_info.parent_run_id:
                     # 检查是否是活跃 supervisor（通过 session 持久化，reported_result 可能不设）
                     parent_ri = self.runs.get(run_info.parent_run_id)
-                    if parent_ri and getattr(parent_ri, '_active_supervisor', None) == run_info.run_id:
-                        logger.info(
-                            f"[{run_info.run_id[:8]}] Supervisor exited without report.py, "
-                            f"will be resumed next round"
-                        )
+                    is_active_sup = parent_ri and getattr(parent_ri, '_active_supervisor', None) == run_info.run_id
+                    sup_done = getattr(run_info, '_supervisor_done', False)
+                    if is_active_sup or sup_done:
+                        if sup_done:
+                            logger.info(f"[{run_info.run_id[:8]}] Supervisor PASS complete")
+                            run_info.status = RunStatus.COMPLETED
+                        else:
+                            logger.info(
+                                f"[{run_info.run_id[:8]}] Supervisor exited without report.py, "
+                                f"will be resumed next round"
+                            )
                         # 不标状态，run_info 保留在 runs 中供下次 continue_run
                     else:
                         # DAG step 子 agent：必须通过 report.py 完成
