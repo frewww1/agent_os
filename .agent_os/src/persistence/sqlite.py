@@ -216,6 +216,11 @@ def load_runs_from_disk(pm) -> None:
             ri._fallback_result = r.get("fallback_result")
             ri._event_seq = r.get("event_seq", 0)
             ri.turn_markers = r.get("turn_markers", [])
+            # 恢复 supervisor 相关内存字段
+            if r.get("waiting_supervisor"):
+                object.__setattr__(ri, '_waiting_supervisor', r["waiting_supervisor"])
+            if r.get("active_supervisor"):
+                object.__setattr__(ri, '_active_supervisor', r["active_supervisor"])
             # 恢复 OS 注入事件并尝试合并 jsonl 会话记录
             os_events = r.get("os_events", [])
             _restore_events_with_jsonl(pm, ri, r, os_events)

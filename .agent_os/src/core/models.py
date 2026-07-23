@@ -137,6 +137,8 @@ class RunInfo(BaseModel):
             "plan_content": self.plan_content,
             "plan_file": self.plan_file,
             "supervisor": self.supervisor,
+            "waiting_supervisor": getattr(self, '_waiting_supervisor', None),
+            "active_supervisor": getattr(self, '_active_supervisor', None),
             "os_events": os_events,
         }
 
