@@ -301,7 +301,19 @@ class NativeBackend(BaseAgentBackend):
         elif session_id:
             cmd.extend(["--session-id", session_id])
         if system_prompt:
-            cmd.extend(["--append-system-prompt", system_prompt])
+            import tempfile
+            # 通过临时文件传递 system prompt，避免 Windows 命令行长度限制截断
+            spf = tempfile.NamedTemporaryFile(
+                mode="w", suffix=".md", delete=False,
+                encoding="utf-8", dir=cwd or ".", prefix="agent_os_sp_"
+            )
+            spf.write(system_prompt)
+            spf.close()
+            cmd.extend(["--system-prompt-file", spf.name])
+            # 注册清理回调
+            if not hasattr(self, '_sp_cleanup_files'):
+                self._sp_cleanup_files = []
+            self._sp_cleanup_files.append(spf.name)
 
         process = subprocess.Popen(
             cmd,

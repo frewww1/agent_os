@@ -1120,31 +1120,7 @@ class ProcessManager:
         ri._recorded = False
         ri.add_event("rewind", to_seq=target_seq, jsonl_cut_line=cut_line_idx)
 
-        # git 回退：找到该 run 的 agent 级 commit，reset 到它的父 commit
-        logger.info(f"[{run_id[:8]}] rewind: workspace_path={ri.workspace_path}")
-        if ri.workspace_path:
-            try:
-                run_sha = self.recorder.run_commit_sha(run_id, ri.workspace_path)
-                logger.info(f"[{run_id[:8]}] rewind: agent_sha={run_sha}")
-                if run_sha:
-                    # reset 到该 run commit 的父 commit（即撤销该 run 的 commit）
-                    import subprocess as _sp
-                    wdir = ri.workspace_path
-                    parent = _sp.run(
-                        ["git", "rev-parse", f"{run_sha}~1"],
-                        cwd=wdir, capture_output=True, text=True,
-                        encoding="utf-8", errors="replace", timeout=10
-                    )
-                    parent_sha = parent.stdout.strip()
-                    if parent_sha and parent.returncode == 0:
-                        result = self.recorder.reset_to_commit(
-                            parent_sha, ri.workspace_path, hard=True
-                        )
-                        logger.info(f"[{run_id[:8]}] rewind: git reset to {parent_sha[:8]} "
-                                   f"(before {run_sha[:8]}), ok={result.get('ok')}")
-                        ri.add_event("system", text=f"Git reset to before [{run_id[:8]}] commit")
-            except Exception as e:
-                logger.warning(f"[{run_id[:8]}] rewind: git reset failed (non-fatal): {e}")
+
 
         # 唤醒 SSE 让前端立刻看到状态变化
         if ri._loop and ri._new_output_event:
@@ -1568,8 +1544,8 @@ class ProcessManager:
             f"## Agent 产出\n{context[:8000]}\n\n"
             f"## 指令\n"
             f"审查 agent 产出是否满足所有标准。\n"
-            f"全部满足 → `python report.py --result \"PASS\"` 结束审查\n"
-            f"有问题 → `python send.py --msg \"CORRECTION: <具体问题>\"` 告知执行 agent。"
+            f"全部满足 → `python .agent_os/report.py --result \"PASS\"` 结束审查\n"
+            f"有问题 → `python .agent_os/send.py --msg \"CORRECTION: <具体问题>\"` 告知执行 agent。"
             f"**不要调 report.py**，直接结束即可，下一轮会被自动 resume。"
         )
 
@@ -1578,8 +1554,8 @@ class ProcessManager:
             f"验证 agent 产出是否满足以下所有标准：\n\n"
             f"{run_info.supervisor}\n\n"
             f"Be critical and thorough.\n"
-            f"All criteria met → `python report.py --result \"PASS\"`\n"
-            f"Issues found → `python send.py --msg \"CORRECTION: <feedback>\"` to the agent.\n"
+            f"All criteria met → `python .agent_os/report.py --result \"PASS\"`\n"
+            f"Issues found → `python .agent_os/send.py --msg \"CORRECTION: <feedback>\"` to the agent.\n"
             f"Do NOT call report.py after sending feedback. Just exit.\n"
             f"You will be resumed automatically for next review round."
         )
@@ -1969,8 +1945,6 @@ class ProcessManager:
             f"Your workspace is at {ws}\n"
             "This is the persistent file memory for the entire task.\n"
             "The env var $AGENT_OS_WORKSPACE points to this directory.\n"
-            "**All file read/write MUST use the workspace directory.** "
-            "Read files with `cat $AGENT_OS_WORKSPACE/...` or use the Read tool on workspace paths.\n"
             "dag.json is at $AGENT_OS_WORKSPACE/dag.json (NOT in the current cwd).\n"
             "Use `python .agent_os/dag.py --ready` which reads from $AGENT_OS_WORKSPACE automatically.\n\n"
             "## Agent Types\n\n"
@@ -2013,7 +1987,7 @@ class ProcessManager:
             completion = (
                 "## How to Complete\n\n"
                 "You are a **generative** agent. You work autonomously and decide when to finish.\n"
-                "When your task is complete, you **must** call `python report.py "
+                "When your task is complete, you **must** call `python .agent_os/report.py "
                 "--result \"<summary>\"` to report your results. Without this, your task will be "
                 "marked as **failed** even if the work is done.\n"
                 "- ⚠️ report.py is MANDATORY for completion. The process exiting alone is not enough.\n"
@@ -2026,16 +2000,14 @@ class ProcessManager:
             f"Your shared workspace is at: {ws_rel}\n"
             "This is the persistent file memory for the entire task — "
             "all agents in this pipeline read and write to this same directory. "
-            "Files you create here will be accessible to downstream agents.\n"
-            "**All file read/write MUST use the workspace directory.** "
-            "Use `cat $AGENT_OS_WORKSPACE/...` or Read/Write tools with the full workspace path.\n\n"
+            "Files you create here will be accessible to downstream agents.\n\n"
             + completion +
             "## Available Tools\n\n"
             "- Create sub-agents: use the Task tool (subagent_type=generative|interactive) "
             "for further parallel work.\n"
-            "- report.py: `python report.py --result \"<summary>\"`\n"
+            "- report.py: `python .agent_os/report.py --result \"<summary>\"`\n"
             "  Call this when your task is done. Your parent agent will be resumed.\n"
-            "- send.py: `python send.py --msg \"<message>\"`\n"
+            "- send.py: `python .agent_os/send.py --msg \"<message>\"`\n"
             "  Send progress updates to your parent agent."
         )
         if task_prompt:
