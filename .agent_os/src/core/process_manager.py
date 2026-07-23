@@ -360,7 +360,8 @@ class ProcessManager:
             system_prompt = system_prompt.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
         # 根 agent 也注入 Agent OS system prompt（告知 workspace + MCP 工具）
         if not parent_run_id and not system_prompt:
-            system_prompt = self._build_root_system_prompt()
+            system_prompt = self._build_root_system_prompt(
+                env.get("AGENT_OS_WORKSPACE", ".agent_os/workspaces/<run_id>/"))
         run_id = uuid.uuid4().hex[:10]
         # OS 主动生成 session_id 并通过 --session-id 注入，不再依赖 stream-json 输出。
         # 这样即使 claude CLI 在某些情况下回退到非 JSON 输出，OS 也能可靠地 resume。
@@ -1952,12 +1953,13 @@ class ProcessManager:
         return config_file
 
     @staticmethod
-    def _build_root_system_prompt() -> str:
+    def _build_root_system_prompt(workspace_path: str = "") -> str:
         """根 agent 的 Agent OS system prompt。"""
+        ws = workspace_path or ".agent_os/workspaces/<run_id>/"
         return (
             "You are running under Agent OS, a multi-agent orchestration system.\n\n"
             "## Workspace\n\n"
-            "Your workspace is at .agent_os/workspaces/<your_run_id>/.\n"
+            f"Your workspace is at {ws}\n"
             "This is the persistent file memory for the entire task.\n\n"
             "## Agent Types\n\n"
             "- generative: runs autonomously, calls report.py when done\n"
