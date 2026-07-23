@@ -163,6 +163,11 @@ class ProcessManager:
             if not child_ids:
                 continue
             parent = self.runs.get(parent_id)
+            # 过滤掉 supervisor 子 agent（不是 spawn 子 agent）
+            active_sup = getattr(parent, '_active_supervisor', None) if parent else None
+            child_ids = [cid for cid in child_ids if cid != active_sup]
+            if not child_ids:
+                continue
             spawn_id = parent.spawn_id if parent else ""
             if not spawn_id:
                 # 父 agent 没有 spawn_id（可能是旧数据），生成一个
