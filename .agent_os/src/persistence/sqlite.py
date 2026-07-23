@@ -98,6 +98,34 @@ def save_runs_to_disk(pm) -> None:
         logger.error(f"save_runs failed: {e}")
 
 
+def _auto_resume_stalled_parents(pm) -> None:
+    """重启恢复：WAITING 状态的 agent 如果 supervisor 已终止，自动 resume 父 agent。"""
+    for run_id, ri in list(pm.runs.items()):
+        if ri.status != pm.RunStatus.WAITING:
+            continue
+        waiting_sup = getattr(ri, '_waiting_supervisor', None)
+        if not waiting_sup or waiting_sup not in pm.runs:
+            continue
+        sup_ri = pm.runs[waiting_sup]
+        if sup_ri.status in (pm.RunStatus.COMPLETED, pm.RunStatus.FAILED,
+                              pm.RunStatus.ERROR, pm.RunStatus.STOPPED,
+                              pm.RunStatus.KILLED, pm.RunStatus.WAITING):
+            # supervisor 已终止 → 用消息列表中的最后一条 CORRECTION 作为 feedback resume 执行 agent
+            last_msg = ""
+            for msg in reversed(ri.messages or []):
+                txt = msg.get("msg", "") if isinstance(msg, dict) else str(msg)
+                if "CORRECTION" in txt.upper() or "correction" in txt.lower():
+                    last_msg = txt
+                    break
+            if not last_msg:
+                last_msg = ri.messages[-1].get("msg", "") if ri.messages and isinstance(ri.messages[-1], dict) else ""
+            logger.info(f"auto-resume stalled parent {run_id[:8]} "
+                         f"(supervisor={waiting_sup[:8]} {sup_ri.status.value})")
+            feedback = last_msg or "CORRECTION: Please review the work"
+            pm.continue_run(run_id, feedback, source="os")
+            pm._mark_dirty()
+
+
 def _restore_events_with_jsonl(pm, ri, r, os_events_backup: list) -> None:
     """从 jsonl 恢复会话事件，合并 OS 注入事件。jsonl 由 CodeBuddy CLI 维护。"""
     os_events = r.get("os_events", os_events_backup)
@@ -232,6 +260,7 @@ def load_runs_from_disk(pm) -> None:
 
     logger.info(f"loaded {total} historical runs ({len(seen_run_ids)} unique) from sqlite")
     pm._restore_spawn_requests()
+    _auto_resume_stalled_parents(pm)
 
 
 def _migrate_from_json(pm, conn: sqlite3.Connection) -> None:
