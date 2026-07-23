@@ -382,8 +382,8 @@ class ProcessManager:
             logger.info(f"[{run_id[:8]}] STEP_ID from env: {step_id_from_env}")
 
         logger.info(f"[{run_id[:8]}] Launching agent...")
-        # 子 agent 的 cwd 设为 .agent_os/ 根目录，根 agent 用 project_root
-        workspace_cwd = os.path.join(self.project_root, ".agent_os") if parent_run_id else self.project_root
+        # CLI 启动路径统一为 project_root（.agent_os 的上一级）
+        workspace_cwd = self.project_root
         try:
             handle = self._backend.launch(
                 prompt=prompt,
@@ -901,7 +901,7 @@ class ProcessManager:
         })
         if run_info.workspace_path:
             env["AGENT_OS_WORKSPACE"] = run_info.workspace_path
-            workspace_cwd = os.path.join(self.project_root, ".agent_os") if run_info.parent_run_id else self.project_root
+            workspace_cwd = self.project_root
         else:
             env = self._build_env(run_id)
             workspace_cwd = self.project_root
