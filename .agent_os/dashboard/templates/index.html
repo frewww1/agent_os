@@ -818,7 +818,10 @@ function renderTextDelta(ev) {
 
 function _clearThinking() {
     _thinkingBuf = '';
-    if (_thinkingCard) { _thinkingCard.remove(); _thinkingCard = null; }
+    if (_thinkingCard) {
+        _thinkingCard.open = false;  // 收起而非删除，避免 DOM 异常
+        _thinkingCard.style.opacity = '0.6';
+    }
 }
 
 function renderText(ev) {
