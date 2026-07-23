@@ -1563,8 +1563,8 @@ class ProcessManager:
             f"## 指令\n"
             f"审查 agent 产出是否满足所有标准。\n"
             f"全部满足 → `python report.py --result \"PASS\"` 结束审查\n"
-            f"有问题 → `python send.py --msg \"CORRECTION: <具体问题>\"` 告知执行 agent。"
-            f"**不要调 report.py**，直接结束即可，下一轮会被自动 resume。"
+            f"有问题 → `python report.py --result \"CORRECTION: <具体问题>\"` "
+            f"告知执行 agent，会自动被 resume。"
         )
 
         sup_system_prompt = (
@@ -1573,9 +1573,8 @@ class ProcessManager:
             f"{run_info.supervisor}\n\n"
             f"Be critical and thorough.\n"
             f"All criteria met → `python report.py --result \"PASS\"`\n"
-            f"Issues found → `python send.py --msg \"CORRECTION: <feedback>\"` to the agent.\n"
-            f"Do NOT call report.py after sending feedback. Just exit.\n"
-            f"You will be resumed automatically for next review round."
+            f"Issues found → `python report.py --result \"CORRECTION: <feedback>\"`\n"
+            f"After calling report.py, the reviewed agent will be resumed automatically."
         )
 
         sup_run_id = self.start_run(
