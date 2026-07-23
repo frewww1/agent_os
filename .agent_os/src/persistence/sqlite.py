@@ -112,26 +112,26 @@ def _auto_resume_stalled_parents(pm) -> None:
         if ri.interactive or not ri.session_id:
             continue
 
-        if ri.status == pm.RunStatus.RUNNING:
+        if ri.status == RunStatus.RUNNING:
             active_sup = getattr(ri, '_active_supervisor', None)
             if active_sup and active_sup in pm.runs:
                 logger.info(f"auto-complete RUNNING agent {run_id[:8]} (dead CLI, supervisor active)")
-                ri.status = pm.RunStatus.COMPLETED
+                ri.status = RunStatus.COMPLETED
                 ri.completed_at = ri.completed_at or __import__('datetime').datetime.now()
                 ri.add_text_line("[Agent OS] Recovered after restart", kind="system")
                 pm._on_run_completed(ri)
                 pm._mark_dirty()
             continue
 
-        if ri.status != pm.RunStatus.WAITING:
+        if ri.status != RunStatus.WAITING:
             continue
         waiting_sup = getattr(ri, '_waiting_supervisor', None)
         if not waiting_sup or waiting_sup not in pm.runs:
             continue
         sup_ri = pm.runs[waiting_sup]
-        if sup_ri.status in (pm.RunStatus.COMPLETED, pm.RunStatus.FAILED,
-                              pm.RunStatus.ERROR, pm.RunStatus.STOPPED,
-                              pm.RunStatus.KILLED):
+        if sup_ri.status in (RunStatus.COMPLETED, RunStatus.FAILED,
+                              RunStatus.ERROR, RunStatus.STOPPED,
+                              RunStatus.KILLED):
             # supervisor 已终止 → 用消息列表中的最后一条 CORRECTION 作为 feedback resume 执行 agent
             last_msg = ""
             for msg in reversed(ri.messages or []):
