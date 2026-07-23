@@ -1563,8 +1563,8 @@ class ProcessManager:
             f"## 指令\n"
             f"审查 agent 产出是否满足所有标准。\n"
             f"全部满足 → `python report.py --result \"PASS\"` 结束审查\n"
-            f"有问题 → `python report.py --result \"CORRECTION: <具体问题>\"` "
-            f"告知执行 agent，会自动被 resume。"
+            f"有问题 → `python send.py --msg \"CORRECTION: <具体问题>\"` 告知执行 agent。"
+            f"**不要调 report.py**，直接结束即可，下一轮会被自动 resume。"
         )
 
         sup_system_prompt = (
@@ -1573,8 +1573,9 @@ class ProcessManager:
             f"{run_info.supervisor}\n\n"
             f"Be critical and thorough.\n"
             f"All criteria met → `python report.py --result \"PASS\"`\n"
-            f"Issues found → `python report.py --result \"CORRECTION: <feedback>\"`\n"
-            f"After calling report.py, the reviewed agent will be resumed automatically."
+            f"Issues found → `python send.py --msg \"CORRECTION: <feedback>\"` to the agent.\n"
+            f"Do NOT call report.py after sending feedback. Just exit.\n"
+            f"You will be resumed automatically for next review round."
         )
 
         sup_run_id = self.start_run(
@@ -2173,16 +2174,21 @@ class ProcessManager:
                     logger.info(f"[{run_info.run_id[:8]}] Marked {run_info.status.value}")
                     self._on_run_completed(run_info)
             elif run_info.status == RunStatus.WAITING:
-                all_children_done = True
-                for spawn_req in self.spawn_requests.values():
-                    if spawn_req.parent_run_id == run_info.run_id and not spawn_req.is_resolved:
-                        all_children_done = False
-                        break
-                if all_children_done:
-                    run_info.status = (
-                        RunStatus.COMPLETED if (session.returncode or 0) == 0
-                        else RunStatus.FAILED
-                    )
+                # supervisor 审查中：不要改状态，等待 send.py 发 CORRECTION 或 report.py 发 PASS
+                waiting_sup = getattr(run_info, '_waiting_supervisor', None)
+                if waiting_sup and waiting_sup in self.runs:
+                    logger.info(f"[{run_info.run_id[:8]}] Waiting for supervisor review, keep WAITING")
+                else:
+                    all_children_done = True
+                    for spawn_req in self.spawn_requests.values():
+                        if spawn_req.parent_run_id == run_info.run_id and not spawn_req.is_resolved:
+                            all_children_done = False
+                            break
+                    if all_children_done:
+                        run_info.status = (
+                            RunStatus.COMPLETED if (session.returncode or 0) == 0
+                            else RunStatus.FAILED
+                        )
                     run_info.completed_at = datetime.now()
                     logger.info(f"[{run_info.run_id[:8]}] WAITING agent done, marked {run_info.status.value}")
                     if run_info.workspace_path and not run_info._recorded:

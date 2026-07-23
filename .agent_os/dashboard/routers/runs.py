@@ -300,15 +300,20 @@ async def send_message(run_id: str, req: SendMsgRequest):
     if not run_info:
         return JSONResponse({"error": "run not found"}, status_code=404)
     from datetime import datetime
+    import logging
+    logger = logging.getLogger("agent_os")
+    logger.info(f"[{run_id[:8]}] send_message received: {req.msg[:100]}")
+
     run_info.messages.append({"time": datetime.now().isoformat(), "msg": req.msg})
     run_info.add_event("send", text=req.msg)
 
     # 如果 agent 正在等待 supervisor 审查，收到消息后 resume
     waiting_sup_id = getattr(run_info, '_waiting_supervisor', None)
+    logger.info(f"[{run_id[:8]}] send_message: _waiting_supervisor={waiting_sup_id}, status={run_info.status.value}")
     if waiting_sup_id:
         msg_upper = req.msg.strip().upper()
         if msg_upper.startswith("PASS"):
-            # 监督通过：清除状态，触发 _on_run_completed 做 spawn resolution
+            logger.info(f"[{run_id[:8]}] send_message: PASS, completing")
             object.__setattr__(run_info, '_waiting_supervisor', None)
             run_info.supervisor = None
             run_info.add_text_line("[Agent OS] Supervisor: PASS — task complete", kind="system")
@@ -317,12 +322,15 @@ async def send_message(run_id: str, req: SendMsgRequest):
                 pm._mark_dirty()
         elif msg_upper.startswith("CORRECTION"):
             correction = req.msg.strip()
-            # 仅清除等待状态，保留 supervisor 字段以便下轮 resume 同一 supervisor
+            logger.info(f"[{run_id[:8]}] send_message: CORRECTION, calling continue_run")
             object.__setattr__(run_info, '_waiting_supervisor', None)
             run_info.add_text_line(f"[Agent OS] Supervisor correction: {correction[:200]}", kind="system")
             if pm:
-                pm.continue_run(run_id, correction, source="os")
+                ok = pm.continue_run(run_id, correction, source="os")
+                logger.info(f"[{run_id[:8]}] continue_run result: {ok}")
                 pm._mark_dirty()
+    else:
+        logger.info(f"[{run_id[:8]}] send_message: no _waiting_supervisor, msg stored only")
 
     return JSONResponse({"ok": True})
 
