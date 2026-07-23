@@ -358,10 +358,6 @@ class ProcessManager:
         prompt = prompt.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
         if system_prompt:
             system_prompt = system_prompt.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
-        # 根 agent 也注入 Agent OS system prompt（告知 workspace + MCP 工具）
-        if not parent_run_id and not system_prompt:
-            system_prompt = self._build_root_system_prompt(
-                env.get("AGENT_OS_WORKSPACE", ".agent_os/workspaces/<run_id>/"))
         run_id = uuid.uuid4().hex[:10]
         # OS 主动生成 session_id 并通过 --session-id 注入，不再依赖 stream-json 输出。
         # 这样即使 claude CLI 在某些情况下回退到非 JSON 输出，OS 也能可靠地 resume。
@@ -381,6 +377,11 @@ class ProcessManager:
         step_id_from_env = env.get("AGENT_OS_STEP_ID")
         if step_id_from_env:
             logger.info(f"[{run_id[:8]}] STEP_ID from env: {step_id_from_env}")
+
+        # 根 agent 注入 Agent OS system prompt（env 已构建，可获取真实 workspace 路径）
+        if not parent_run_id and not system_prompt:
+            system_prompt = self._build_root_system_prompt(
+                env.get("AGENT_OS_WORKSPACE", ".agent_os/workspaces/<run>/"))
 
         logger.info(f"[{run_id[:8]}] Launching agent...")
         # CLI 启动路径统一为 project_root（.agent_os 的上一级）
