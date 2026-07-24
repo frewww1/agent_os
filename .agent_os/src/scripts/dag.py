@@ -56,7 +56,7 @@ def _workspace() -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Operate dag.json for orchestrator")
+    parser = argparse.ArgumentParser(description="Operate dag.json for Agent OS")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--ready", action="store_true",
                        help="print ready steps as JSON array")

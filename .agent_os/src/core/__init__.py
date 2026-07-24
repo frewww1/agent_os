@@ -3,7 +3,14 @@ from .models import RunStatus, RunInfo, SpawnRequest, CompletionSignal
 from .event_bus import EventBus
 from .registry import Registry
 from .prompt_builder import PromptBuilder
-from .orchestrator import Orchestrator
+from .agent import (
+    Agent,
+    RootAgent,
+    TaskAgent,
+    ExploreAgent,
+    InteractiveAgent,
+    SupervisorAgent,
+)
 from .dag_service import DagService
 from .session_manager import SessionManager
 from .goal_graph import GoalGraph

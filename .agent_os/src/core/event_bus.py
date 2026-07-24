@@ -2,7 +2,7 @@
 
 解耦 RunInfo 与 SSE 唤醒 / 持久化触发 / 完成信号分发。
 RunInfo.add_event 不再直接操作 _loop / _new_output_event / _dirty_callback，
-改为 publish 到 bus；StreamOutput / Persistence / Orchestrator 各自订阅关心的 topic。
+改为 publish 到 bus；StreamOutput / Persistence / AgentOS 各自订阅关心的 topic。
 
 Topic 约定：
   run.event      — 新结构化事件（payload: run_id, event）

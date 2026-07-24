@@ -26,7 +26,7 @@ class StreamReader:
     """agent 进程输出读取器。
 
     启动后台线程读取 backend.stream() 输出，解析事件，
-    stream 结束后调 Orchestrator.resolve_process_exit 定型。
+    stream 结束后调 Agent.on_process_exit 定型。
     """
 
     def __init__(self, pm):
@@ -97,14 +97,14 @@ class StreamReader:
             logger.info(f"[{run_info.run_id[:8]}] Session ended: code={session.returncode}, status={run_info.status.value}, events={line_count}")
 
             # 定型 + 编排逻辑已提取到 _resolve_process_exit（读取与定型分离）
-            self._pm._orchestrator.resolve_process_exit(run_info, session.returncode)
+            self._pm.resolve_process_exit(run_info, session.returncode)
             return
 
         except Exception as e:
             run_info.add_event("error", text=f"[ERROR] {e}")
             self._transition(run_info, RunStatus.FAILED)
             run_info.completed_at = datetime.now()
-            self._pm._orchestrator.on_run_completed(run_info)
+            self._pm.on_run_completed(run_info)
 
         finally:
             self._notify_frontend(run_info.run_id)

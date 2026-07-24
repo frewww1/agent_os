@@ -41,7 +41,6 @@ sys.modules["agent_os.src.recorder"] = mock_recorder
 
 from agent_os.src.core.agent_os import AgentOS
 from agent_os.src.core.registry import Registry
-from agent_os.src.core.orchestrator import Orchestrator
 
 
 class TestAgentTypeLifecycle:
@@ -52,7 +51,6 @@ class TestAgentTypeLifecycle:
         """创建 mock AgentOS。"""
         pm = AgentOS.__new__(AgentOS)
         pm._registry = Registry()
-        pm._orchestrator = Orchestrator(pm)
         pm._originally_waiting = set()
         pm._state_dir = os.path.join(AGENT_OS_DIR, "state")
         pm._runs_file = os.path.join(pm._state_dir, "runs.json")
@@ -79,6 +77,9 @@ class TestAgentTypeLifecycle:
         pm._mark_dirty = MagicMock()
         pm._bus = MagicMock()
         pm._loop = None  # no event loop in test environment
+        pm._agents = {}
+        pm._stream_reader = MagicMock()
+        pm._backend = MagicMock()
         return pm
 
     def _make_run_info(self, run_id, task_type="generative", interactive=None,
@@ -233,13 +234,14 @@ class TestAgentTypeLifecycle:
         )
         pm.spawn_requests["sp1"] = sr
 
+        parent_agent = pm._get_agent("parent1")
         # 只有 child1 完成，不应 resume
-        pm._check_spawn_resolution(sr)
+        parent_agent._check_spawn_resolution(sr)
         assert sr.is_resolved is False, "should not resume when only 1 of 2 done"
 
         # child2 也完成
         child2.status = RunStatus.COMPLETED
-        pm._check_spawn_resolution(sr)
+        parent_agent._check_spawn_resolution(sr)
         assert sr.is_resolved is True, "should resume when all done"
 
     def test_spawn_resolution_any_strategy(self, pm):
@@ -265,14 +267,16 @@ class TestAgentTypeLifecycle:
         sr.completed_children.add("child1")
         pm.spawn_requests["sp1"] = sr
 
-        pm._check_spawn_resolution(sr)
+        parent_agent = pm._get_agent("parent1")
+        parent_agent._check_spawn_resolution(sr)
         assert sr.is_resolved is True, "should resume on first completion"
 
     # ---- System Prompt 测试 ----
 
     def test_root_system_prompt_contains_mcp_tools(self, pm):
         """根 agent system prompt 包含 MCP 工具列表。"""
-        prompt = pm._build_root_system_prompt()
+        from agent_os.src.core.prompt_builder import PromptBuilder
+        prompt = PromptBuilder.build_root_system_prompt()
         assert "Task tool" in prompt
         assert "report.py" in prompt
         assert "send.py" in prompt
@@ -281,7 +285,8 @@ class TestAgentTypeLifecycle:
 
     def test_subagent_system_prompt_contains_mcp_tools(self, pm):
         """子 agent system prompt 包含 MCP 工具和 Task。"""
-        prompt = pm._build_subagent_system_prompt(
+        from agent_os.src.core.prompt_builder import PromptBuilder
+        prompt = PromptBuilder.build_subagent_system_prompt(
             task_type="generative",
             task_prompt="do something",
             workspace_path="/tmp/ws/test"
@@ -295,8 +300,9 @@ class TestAgentTypeLifecycle:
 
     def test_subagent_prompt_differentiates_types(self, pm):
         """generative 和 interactive 的子 agent prompt 有不同的完成指导。"""
-        gen = pm._build_subagent_system_prompt("generative", "task A")
-        inter = pm._build_subagent_system_prompt("interactive", "task B")
+        from agent_os.src.core.prompt_builder import PromptBuilder
+        gen = PromptBuilder.build_subagent_system_prompt("generative", "task A")
+        inter = PromptBuilder.build_subagent_system_prompt("interactive", "task B")
         # generative 要求 report.py
         assert "report.py" in gen
         assert "MANDATORY" in gen
@@ -337,7 +343,10 @@ class TestAgentTypeLifecycle:
 
     def test_explore_agent_cannot_spawn(self, pm):
         """explore agent 禁止创建子 agent。"""
-        explore = self._make_run_info("explore1", task_type="explore")
+        # explore 必须是子 agent（根永远是 RootAgent）
+        root = self._make_run_info("root1")
+        pm.runs["root1"] = root
+        explore = self._make_run_info("explore1", task_type="explore", parent_run_id="root1")
         pm.runs["explore1"] = explore
 
         result = pm.spawn_children(
@@ -345,7 +354,7 @@ class TestAgentTypeLifecycle:
             parent_session_id="sid",
             tasks=[{"prompt": "test"}],
         )
-        assert "explore agent" in result.get("error", "").lower()
+        assert "explore" in result.get("error", "").lower()
 
 
 class TestTaskTypeResolution:
@@ -355,7 +364,6 @@ class TestTaskTypeResolution:
     def pm(self):
         pm = AgentOS.__new__(AgentOS)
         pm._registry = Registry()
-        pm._orchestrator = Orchestrator(pm)
         pm._originally_waiting = set()
         pm._state_dir = os.path.join(AGENT_OS_DIR, "state")
         pm._runs_file = os.path.join(pm._state_dir, "runs.json")
@@ -374,6 +382,9 @@ class TestTaskTypeResolution:
         pm.recorder.baseline_commit = MagicMock()
         pm.recorder._git_cwd = MagicMock(return_value=AGENT_OS_DIR)
         pm._mark_dirty = MagicMock()
+        pm._agents = {}
+        pm._stream_reader = MagicMock()
+        pm._backend = MagicMock()
         return pm
 
     def test_type_defaults_to_generative(self, pm):

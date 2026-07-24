@@ -75,6 +75,8 @@ class RunInfo(BaseModel):
         object.__setattr__(self, '_waiting_supervisor', None)
         object.__setattr__(self, '_max_goal_retries', None)
         object.__setattr__(self, '_supervisor_done', False)
+        object.__setattr__(self, '_supervisor_graph_active', False)
+        object.__setattr__(self, '_goal_graph_active', False)
 
     def add_event(self, kind: str, **payload) -> dict:
         """追加结构化事件（前端按 kind 渲染）。通过 EventBus 分发副作用。"""
@@ -140,16 +142,3 @@ class SpawnRequest(BaseModel):
     wait_strategy: str = "all"  # "all" or "any"
     completed_children: set = Field(default_factory=set)
     is_resolved: bool = False
-
-
-@dataclass
-class CompletionSignal:
-    """agent 完成信号 — 原始事实，不定型。由触发源产出，Orchestrator 消费。
-
-    触发源（_read_output / report_complete / complete_interactive / idle 超时）
-    只填原始事实，状态定型由 Orchestrator 的 transition() 统一处理。
-    """
-    run_id: str
-    exit_code: int | None = None
-    reported_result: str | None = None
-    source: str = ""  # "process_exit" | "report" | "user_done" | "idle_timeout"

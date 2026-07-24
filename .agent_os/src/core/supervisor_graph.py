@@ -1,12 +1,10 @@
 """SupervisorGraph — Supervisor 审查循环的 LangGraph 编排。
 
-比 GoalGraph 更复杂：双 agent 循环（被审查者 + 审查者交替），2 个中断点。
+双 agent 循环（被审查者 + 审查者交替），2 个中断点：
 - wait_verdict: 中断等 supervisor report.py PASS/CORRECTION
 - correct: CORRECTION → 反馈 agent 重做 → 中断等 agent 完成 → resume supervisor
 
-⚠️ 实验性骨架 — 双中断点的时序处理较复杂，当前未集成到 Orchestrator。
-Orchestrator 的 supervisor 分支保留原 if/elif 逻辑作为稳定实现。
-后续验证时序正确后可切换到此 graph。
+集成入口：Agent._supervisor_step → _run_supervisor_cycle → SupervisorGraph.run/resume。
 """
 import os
 import sqlite3
@@ -15,6 +13,8 @@ from typing import TypedDict, Optional
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import interrupt, Command
+
+from .prompt_builder import PromptBuilder
 
 import logging
 
@@ -49,7 +49,7 @@ class SupervisorGraph:
         if ri is None:
             logger.warning(f"[SupervisorGraph] agent {state['agent_run_id'][:8]} not found")
             return {"verdict": "PASS"}  # 容错：跳过审查
-        sup_id = self._pm._orchestrator._spawn_supervisor(ri)
+        sup_id = self._pm._get_agent(ri.run_id)._spawn_supervisor()
         logger.info(f"[SupervisorGraph] spawned supervisor {sup_id[:8]} for agent {state['agent_run_id'][:8]}")
         return {"supervisor_run_id": sup_id}
 
@@ -78,7 +78,7 @@ class SupervisorGraph:
         # agent 重做完成 → resume supervisor 审查
         ri = self._pm.runs.get(state["agent_run_id"])
         if ri:
-            context = self._pm._build_work_context(ri)
+            context = PromptBuilder.build_work_context(ri)
             self._pm.continue_run(
                 state["supervisor_run_id"],
                 f"## Agent 新一轮产出\n\n{context[:8000]}\n\n请继续审查。满意后 report.py --result \"PASS\"",

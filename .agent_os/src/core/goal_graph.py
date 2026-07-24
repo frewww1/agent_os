@@ -4,7 +4,7 @@
 - evaluate: 调 codebuddy 子进程评估 goal 是否达成
 - feedback: 反馈评估结果 + interrupt 等 agent 重做完成
 
-替代 Orchestrator.on_run_completed 里的 goal if/elif 分支。
+集成入口：Agent._goal_step → _run_goal_cycle → GoalGraph.run/resume。
 """
 import os
 import sqlite3
@@ -41,7 +41,7 @@ class GoalGraph:
         if ri is None:
             logger.warning(f"[GoalGraph] run {state['run_id'][:8]} not found, skipping eval")
             return {"is_met": True, "eval_reason": "run not found, auto-pass"}
-        is_met, reason = self._pm._orchestrator._evaluate_goal(ri)
+        is_met, reason = self._pm._get_agent(ri.run_id)._evaluate_goal()
         logger.info(f"[GoalGraph] eval result: is_met={is_met}, retries={state['retries']}/{state['max_retries']}")
         return {"is_met": is_met, "eval_reason": reason}
 

@@ -9,7 +9,6 @@ from datetime import datetime
 from typing import AsyncGenerator
 
 from . import dag_planner as dp
-from .dag_planner import resolve_task_type
 # from ..persistence.git_recorder import Recorder  # TODO: git 功能暂时禁用
 from .dag_service import DagService
 from .env_config import build_agent_env
@@ -17,11 +16,11 @@ from .session_manager import SessionManager
 from .event_bus import EventBus
 from .registry import Registry
 from .prompt_builder import PromptBuilder
-from .orchestrator import Orchestrator
 from .run_state_machine import RunStateMachine
 from .goal_graph import GoalGraph
 from .supervisor_graph import SupervisorGraph
 from .stream_reader import StreamReader
+from .agent import Agent
 from .models import RunStatus, RunInfo, SpawnRequest
 from ..persistence.sqlite import save_runs_to_disk, load_runs_from_disk
 from ..agent.backend import get_backend
@@ -89,12 +88,14 @@ class AgentOS:
         self._bus = EventBus(self._loop)
         self._bus.subscribe("run.dirty", lambda _payload: self._mark_dirty())
         self._bus.subscribe("run.event", self._on_run_event)
-        self._orchestrator = Orchestrator(self)
         self._dag_service = DagService(None, self.project_root, self._registry.runs)  # recorder disabled
         self._session_manager = SessionManager(self._backend)
         self._goal_graph = GoalGraph(self)
         self._supervisor_graph = SupervisorGraph(self)
         self._stream_reader = StreamReader(self)
+
+        # Agent 实例注册表（与 registry.runs 平行，不参与持久化）
+        self._agents: dict[str, Agent] = {}
 
         # 持久化文件
         self._state_dir = os.path.join(PROJECT_ROOT, "state")
@@ -103,6 +104,7 @@ class AgentOS:
         # 启动时尝试恢复历史 runs（仅元数据 + 事件流；进程引用全部丢失，
         # 这些 run 之后都是只读的，能查看 / 删除 / 导出但不能 resume）
         load_runs_from_disk(self)
+        self._sync_agents()
         # 节流写盘：每次 add_event 不直接落盘，由后台线程定期落盘
         self._save_lock = threading.Lock()
         self._save_dirty = False
@@ -126,6 +128,39 @@ class AgentOS:
     def spawn_requests(self) -> dict:
         """转发到 Registry。"""
         return self._registry.spawn_requests
+
+    # ---- Agent 管理 ----
+
+    def _sync_agents(self) -> None:
+        """为所有已注册的 run 创建 Agent 实例（重启恢复后调用）。"""
+        for run_id, ri in self._registry.runs.items():
+            if run_id not in self._agents:
+                self._agents[run_id] = Agent.for_run(ri, self)
+
+    def _get_agent(self, run_id: str) -> Agent | None:
+        """获取 agent，不存在则懒创建。"""
+        ri = self._registry.runs.get(run_id)
+        if not ri:
+            return None
+        agent = self._agents.get(run_id)
+        if not agent:
+            agent = Agent.for_run(ri, self)
+            self._agents[run_id] = agent
+        return agent
+
+    def resolve_process_exit(self, run_info: RunInfo, exit_code: int | None) -> None:
+        """进程退出后的处理。委托到 agent.on_process_exit()。"""
+        agent = self._get_agent(run_info.run_id)
+        if agent:
+            agent.on_process_exit(exit_code)
+        else:
+            logger.warning(f"[{run_info.run_id[:8]}] No agent for resolve_process_exit")
+
+    def on_run_completed(self, run_info: RunInfo) -> None:
+        """完成编排入口 — 委托到 agent.on_completed()。"""
+        agent = self._get_agent(run_info.run_id)
+        if agent:
+            agent.on_completed()
 
     # region 工具 & 持久化
     @staticmethod
@@ -160,9 +195,8 @@ class AgentOS:
                 for ri in list(self._registry.runs.values()):
                     if ri.status != RunStatus.RUNNING:
                         continue
-                    if ri.parent_run_id is None:  # 不超时根 agent（用户在交互）
-                        continue
-                    if ri.interactive:  # 不超时 interactive agent（等待用户点 Done）
+                    agent = self._get_agent(ri.run_id)
+                    if agent and not agent.idle_timeout_enabled():
                         continue
                     last_ts = self._last_activity_ts(ri)
                     idle_sec = (now - last_ts).total_seconds()
@@ -170,13 +204,13 @@ class AgentOS:
                         victims.append((ri.run_id, idle_sec))
                 for run_id, idle_sec in victims:
                     logger.warning(f"[{run_id[:8]}] idle {idle_sec:.0f}s > {self._idle_timeout_sec}s, force-completing")
-                    ri = self._registry.runs.get(run_id)
-                    if ri:
-                        ri.add_event(
+                    agent = self._get_agent(run_id)
+                    if agent:
+                        agent.add_event(
                             "error",
                             text=f"[Agent OS] Auto-ended: idle for {int(idle_sec)}s (> {self._idle_timeout_sec}s timeout)",
                         )
-                    self.complete_interactive(run_id)
+                        agent.on_user_done()
             except Exception as e:
                 logger.warning(f"timeout watcher error: {e}")
 
@@ -266,11 +300,14 @@ class AgentOS:
                 f"_resume_restored_parents: resuming {parent_id[:8]} "
                 f"({len(spawn_req.child_run_ids)} children)"
             )
+            parent_agent = self._get_agent(parent_id)
+            if not parent_agent:
+                continue
             if self._loop and self._loop.is_running():
-                asyncio.ensure_future(self._resume_parent_async(spawn_req), loop=self._loop)
+                asyncio.ensure_future(parent_agent._on_children_resolved_async(spawn_req), loop=self._loop)
             else:
                 threading.Thread(
-                    target=self.resume_parent, args=(spawn_req,),
+                    target=parent_agent._on_children_resolved, args=(spawn_req,),
                     daemon=True, name=f"restore-resume-{parent_id[:6]}"
                 ).start()
             resumed_count += 1
@@ -362,6 +399,7 @@ class AgentOS:
                                status=RunStatus.FAILED)
             run_info.add_event("error", text=f"[ERROR] Popen failed: {e}")
             self._registry.runs[config["run_id"]] = run_info
+            self._agents[config["run_id"]] = Agent.for_run(run_info, self)
             self._mark_dirty()
             return {"error": str(e), "run_id": config["run_id"]}
 
@@ -390,6 +428,9 @@ class AgentOS:
         run_info._depth = _depth
         run_info.turn_markers.append((0, config["prompt"]))
         self._registry.runs[run_id] = run_info
+        agent = Agent.for_run(run_info, self)
+        self._agents[run_id] = agent
+        agent.start()
         run_info.add_event("turn", index=1)
         run_info.add_event("prompt", text=config["prompt"], role="user", source="user")
 
@@ -412,319 +453,43 @@ class AgentOS:
 
     # region Agent 孵化
     def spawn_children(self, parent_run_id: str, parent_session_id: str,
-
                        tasks: list[dict], wait_strategy: str = "all") -> dict:
-
-        """
-        批量 spawn 子 agent，返回 spawn 信息。
-        每个 task 可指定 type: "generative"(默认) 或 "interactive"
-        - generative: agent 自行决定何时调用 report.py 结束；进程退出兜底
-        - interactive: 用户在 Dashboard 点 Done 才完成
-        所有类型都可以中途调用 send.py 发消息给父 agent。
-        每个 task 可指定 model（不指定则继承父 agent 的 model）。
-        """
-        # 如果没有 parent_session_id，从 runs 中查找
-        if not parent_session_id and parent_run_id:
-            parent = self._registry.runs.get(parent_run_id)
-            logger.debug(f"spawn_children lookup: parent_run_id={parent_run_id}, found={parent is not None}, "
-                         f"session_id={parent.session_id if parent else 'N/A'}")
-            if parent and parent.session_id:
-                parent_session_id = parent.session_id
-
-        # 计算深度并做限制
-        depth = 0
-        parent = self._get_parent(parent_run_id)
-        if parent:
-            depth = (getattr(parent, '_depth', 0) or 0) + 1
-
-        # 最多 3 层：根 agent(0) → 子 agent(1) → 孙 agent(2)
-        if depth >= 3:
-            logger.warning(f"spawn_children: depth={depth} >= 3, rejecting from {parent_run_id[:8]}")
+        """批量 spawn 子 agent。委托到 agent.spawn_children()。"""
+        agent = self._get_agent(parent_run_id)
+        if not agent:
             return {"spawn_id": "", "child_count": 0, "child_run_ids": [],
-                    "error": f"max depth 3 exceeded (depth={depth})"}
+                    "error": f"parent {parent_run_id} not found"}
+        return agent.spawn_children(tasks, parent_session_id, wait_strategy)
 
-        # 探索模式 agent 禁止 spawn
-        if parent and (parent.interactive or getattr(parent, 'explore_mode', False)):
-            if getattr(parent, 'task_type', 'generative') == 'explore':
-                logger.warning(f"spawn_children: explore agent {parent_run_id[:8]} cannot spawn")
-                return {"spawn_id": "", "child_count": 0, "child_run_ids": [],
-                        "error": "explore agent cannot spawn children"}
-
-        # 父 agent 的 model 作为子 agent 默认值
-        parent_model = parent.model if parent else None
-        parent_workspace = parent.workspace_path if parent else None
-        # 取父 agent 的真实 workspace，让子 agent 共享同一目录。
-        # 嵌套 spawn 时父的 workspace 是从更上层继承来的，按 run_id 拼路径会断开共享。
-        if parent and not parent_workspace:
-            parent_workspace = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)), "workspaces", parent_run_id
-            )
-
-        logger.info(f"spawn_children: parent={parent_run_id[:8] if parent_run_id else 'NONE'}, "
-                    f"parent_session_id={'YES' if parent_session_id else 'NONE'}, "
-                    f"tasks={len(tasks)}, wait={wait_strategy}, parent_model={parent_model}, "
-                    f"parent_workspace={parent_workspace}")
-
-        spawn_id = uuid.uuid4().hex[:10]
-        child_run_ids = []
-        spawned_step_ids = []  # 本次 spawn 命中的 DAG step，循环后统一置 running
-
-        for task in tasks:
-            prompt = task.get("prompt", "")
-            agent_name = task.get("agent_name")
-            task_type = resolve_task_type(task, parent_workspace)
-            child_model = task.get("model") or parent_model
-            step_id = task.get("step_id")  # DAG step 标识，透传给子 agent env
-            goal = task.get("goal")  # DAG step 级 goal（session 级也由此传入）
-            supervisor = task.get("supervisor")  # DAG step 级 supervisor
-            if isinstance(supervisor, dict):
-                supervisor = _json.dumps(supervisor, ensure_ascii=False)
-            if not prompt:
-                logger.warning(f"spawn_children: task {task.get('id','?')} has no prompt, skipping")
-                continue
-            if step_id:
-                spawned_step_ids.append(step_id)
-
-            # 为子 agent 注入 system prompt：
-            # 任务指令合并到 system prompt 中（--append-system-prompt），
-            # 确保优先级稳定，不受多轮对话或 CLI 行为影响。
-            # 用户 prompt 仅作为最简触发语。
-            sub_system_prompt = PromptBuilder.build_subagent_system_prompt(
-                task_type, prompt, parent_workspace)
-
-            # 用户 prompt：最简触发语（实际任务指令在 system prompt 中）
-            task_hint = prompt.split("\n")[0][:80] if prompt else "task"
-            wrapped_prompt = f"[Agent OS] Execute: {task_hint}"
-
-            # 子 agent 继承父 agent 的 workspace
-            child_env_extras = {}
-            if parent_workspace:
-                child_env_extras["AGENT_OS_WORKSPACE"] = parent_workspace
-            if step_id:
-                child_env_extras["AGENT_OS_STEP_ID"] = step_id
-
-            run_id = self.start_run(
-                prompt=wrapped_prompt,
-                agent_name=agent_name,
-                parent_run_id=parent_run_id,
-                interactive=(task_type == "interactive"),
-                system_prompt=sub_system_prompt,
-                model=child_model,
-                task_type=task_type,
-                goal=goal,
-                supervisor=supervisor,
-                env_extras=child_env_extras if child_env_extras else None,
-            )
-            child_run_ids.append(run_id)
-
-        # DAG 联动：本次 spawn 命中的 step 自动置 running 并写回父 workspace 的
-        # dag.json。多个 step 共享同一文件，循环外一次性 load/save。失败不影响
-        # spawn 主流程（dag.json 可能不存在，即非 DAG 编排场景）。
-        if spawned_step_ids and parent_workspace:
-            try:
-                dag = dp.load_dag(parent_workspace)
-                steps = dag.get("steps", [])
-                hit = [sid for sid in spawned_step_ids if dp.mark_running(steps, sid)]
-                if hit:
-                    dp.save_dag(parent_workspace, dag)
-                    logger.info(f"spawn_children: marked running {hit} in {parent_workspace}")
-            except Exception as e:
-                logger.warning(f"spawn_children: mark_running failed: {e}")
-
-        # 记录 spawn 请求
-        spawn_req = SpawnRequest(
-            spawn_id=spawn_id,
-            parent_run_id=parent_run_id,
-            parent_session_id=parent_session_id,
-            child_run_ids=child_run_ids,
-            wait_strategy=wait_strategy,
-        )
-        self._registry.spawn_requests[spawn_id] = spawn_req
-
-        # 标记父 agent 为 WAITING
-        parent = self._get_parent(parent_run_id)
-        if parent:
-            self._transition(parent, RunStatus.WAITING)
-            parent.spawn_id = spawn_id
-
-        self._mark_dirty()
-        return {
-            "spawn_id": spawn_id,
-            "child_count": len(child_run_ids),
-            "child_run_ids": child_run_ids,
-        }
+    # endregion
 
     def complete_interactive(self, run_id: str) -> bool:
-        """用户点击 Dashboard 'Done' 按钮，强制完成 agent。
-
-        通用实现：对 interactive 和 generative 都生效。
-        - 如果进程还在跑：先 terminate 子进程
-        - 标记 user_terminated=True，但不主动写 reported_result（用户的"Done"是
-          一个信号，不是一次成果汇报；resume 时父 agent 只需要知道"这个子任务
-          结束了"，无需注入伪造的最终结果文本）
-        - 标记 COMPLETED，触发 resume parent（如果是子 agent）
-        """
-        run_info = self._registry.runs.get(run_id)
-        if not run_info:
+        """用户点击 Dashboard 'Done' 按钮，强制完成 agent。委托到 agent.on_user_done()。"""
+        ri = self._registry.runs.get(run_id)
+        if not ri or ri.status != RunStatus.RUNNING:
             return False
-        if run_info.status != RunStatus.RUNNING:
+        agent = self._get_agent(run_id)
+        if not agent:
             return False
-
-        # 先停掉子进程（如果还活着）
-        proc = run_info._session
-        if proc and proc.poll() is None:
-            try:
-                proc.terminate()
-                logger.info(f"[{run_id[:8]}] complete: terminated child process")
-            except Exception as e:
-                logger.warning(f"[{run_id[:8]}] complete: terminate failed: {e}")
-
-        # 仅打标记 — 不写 reported_result，不动 _fallback_result
-        run_info.user_terminated = True
-        self._transition(run_info, RunStatus.COMPLETED)
-        run_info.completed_at = datetime.now()
-        kind_label = "Interactive" if run_info.interactive else "Generative"
-        run_info.add_event("system", text=f"[{kind_label} Agent] Ended by user (Done).")
-        # 用单独的事件类型，避免和子 agent 自己 report.py 的"final result"混淆
-        run_info.add_event("user_done")
-
-        self._try_record_step_completion(run_info, "(用户手动结束)")
-
-        # 唤醒 SSE
-        self._notify_frontend(run_info.run_id)
-
-        # 触发 resume 检查
-        self._orchestrator.on_run_completed(run_info)
-        self._mark_dirty()
+        agent.on_user_done()
         return True
 
     def report_complete(self, run_id: str, result: str) -> bool:
-        """子 agent 调用 report.py 汇报结果。
-
-        generative: 设置 result 并触发 resume。
-        interactive: 忽略 — interactive agent 不应调用 report.py，由用户点 Done 结束。
-        """
-        run_info = self._registry.runs.get(run_id)
-        if not run_info:
+        """agent 调用 report.py 汇报结果。委托到 agent.on_report()。"""
+        agent = self._get_agent(run_id)
+        if not agent:
             return False
-
-        # interactive agent 调用 report.py → 忽略
-        if run_info.interactive:
-            logger.info(f"[{run_id[:8]}] Interactive agent called report.py — ignored, waiting for user Done")
-            return True
-
-        # supervisor agent 调 report.py → resume SupervisorGraph 或唤醒等待中的执行 agent
-        if run_info.parent_run_id:
-            parent_ri = self._registry.runs.get(run_info.parent_run_id)
-            if parent_ri and getattr(parent_ri, '_supervisor_graph_active', False):
-                # SupervisorGraph 模式：resume graph with verdict
-                result = self._sanitize_unicode(result)
-                run_info.reported_result = result
-                self._transition(run_info, RunStatus.COMPLETED)
-                run_info.completed_at = datetime.now()
-
-                msg_upper = result.strip().upper()
-                if msg_upper.startswith("PASS"):
-                    parent_ri.add_event("system", text="[Agent OS] Supervisor: PASS — task complete")
-                    logger.info(f"[{parent_ri.run_id[:8]}] Supervisor PASS")
-                    finished = self._supervisor_graph.resume_supervisor(parent_ri.run_id, "PASS")
-                    if not finished:
-                        self._mark_dirty()
-                        return True
-                    parent_ri.supervisor = None
-                    self._orchestrator.on_run_completed(parent_ri)
-                else:
-                    parent_ri.add_event("system", text=f"[Agent OS] Supervisor correction: {result[:200]}")
-                    logger.info(f"[{parent_ri.run_id[:8]}] Supervisor CORRECTION, resuming")
-                    finished = self._supervisor_graph.resume_supervisor(parent_ri.run_id, result)
-                    if not finished:
-                        self._mark_dirty()
-                        return True
-
-                self._mark_dirty()
-                return True
-            elif parent_ri and getattr(parent_ri, '_waiting_supervisor', None) == run_id:
-                # fallback：原有逻辑（兼容旧数据无 graph）
-                result = self._sanitize_unicode(result)
-                run_info.reported_result = result
-                self._transition(run_info, RunStatus.COMPLETED)
-                run_info.completed_at = datetime.now()
-
-                msg_upper = result.strip().upper()
-                object.__setattr__(parent_ri, '_waiting_supervisor', None)
-
-                if msg_upper.startswith("PASS"):
-                    object.__setattr__(run_info, '_supervisor_done', True)
-                    object.__setattr__(parent_ri, '_active_supervisor', None)
-                    parent_ri.supervisor = None
-                    parent_ri.add_event("system", text="[Agent OS] Supervisor: PASS — task complete")
-                    logger.info(f"[{parent_ri.run_id[:8]}] Supervisor PASS")
-                    self._orchestrator.on_run_completed(parent_ri)
-                elif msg_upper.startswith("CORRECTION"):
-                    parent_ri.add_event("system", text=f"[Agent OS] Supervisor correction: {result[:200]}")
-                    logger.info(f"[{parent_ri.run_id[:8]}] Supervisor CORRECTION, resuming")
-                    self.continue_run(parent_ri.run_id, result, source="os")
-                else:
-                    parent_ri.add_event("system", text=f"[Agent OS] Supervisor feedback: {result[:200]}")
-                    self.continue_run(parent_ri.run_id, result, source="os")
-
-                self._mark_dirty()
-                return True
-
-        result = self._sanitize_unicode(result)
-        run_info.reported_result = result
-        logger.info(f"[{run_id[:8]}] report_complete: status={run_info.status.value}, result={result[:50]}")
-
-        self._try_record_step_completion(run_info, result)
-
-        if run_info.status == RunStatus.RUNNING:
-            # 先终止进程，确保后续 _on_run_completed → continue_run 时进程已退出
-            proc = run_info._session
-            if proc and proc.poll() is None:
-                try:
-                    proc.terminate()
-                    proc.wait(timeout=5)
-                except Exception:
-                    pass
-            self._transition(run_info, RunStatus.COMPLETED)
-            run_info.completed_at = datetime.now()
-            run_info.add_event("report", text=result)
-            self._orchestrator.on_run_completed(run_info)
-        elif run_info.status == RunStatus.COMPLETED:
-            # 进程已经退出但 _on_run_completed 可能已经触发过了
-            # 需要再次检查是否所有子任务都完成了（因为这次有了 reported_result）
-            self._orchestrator.on_run_completed(run_info)
-        else:
-            # WAITING/FAILED/STOPPED — 不应该报告，但设置 result 以防万一
-            pass
-
-        self._mark_dirty()
-        return True
+        return agent.on_report(result)
 
     def approve_plan(self, run_id: str, feedback: str = "", model: str | None = None) -> bool:
-        """审批通过 plan — 向 agent 发送 approve 消息并恢复执行。"""
-        run_info = self._registry.runs.get(run_id)
-        if not run_info or run_info.status != RunStatus.PLAN_PENDING:
-            return False
-        msg = feedback.strip() if feedback.strip() else "Approved. Please proceed with the implementation."
-        self._transition(run_info, RunStatus.RUNNING)
-        ok = self.continue_run(run_id, prompt=msg, source="user", model=model)
-        if ok:
-            logger.info(f"[{run_id[:8]}] Plan approved: {msg[:60]}")
-        else:
-            logger.warning(f"[{run_id[:8]}] Plan approved but continue_run failed")
-            self._transition(run_info, RunStatus.PLAN_PENDING)  # 回退状态
-        return ok
+        """审批通过 plan。委托到 agent.approve_plan()。"""
+        agent = self._get_agent(run_id)
+        return agent.approve_plan(feedback, model) if agent else False
 
     def reject_plan(self, run_id: str, feedback: str = "", model: str | None = None) -> bool:
-        """拒绝 plan — 向 agent 发送 reject 消息，agent 将修改计划。"""
-        run_info = self._registry.runs.get(run_id)
-        if not run_info or run_info.status != RunStatus.PLAN_PENDING:
-            return False
-        msg = feedback.strip() if feedback.strip() else "Plan rejected. Please revise the approach."
-        self._transition(run_info, RunStatus.RUNNING)
-        logger.info(f"[{run_id[:8]}] Plan rejected: {msg[:60]}")
-        return self.continue_run(run_id, prompt=msg, source="user", model=model)
+        """拒绝 plan。委托到 agent.reject_plan()。"""
+        agent = self._get_agent(run_id)
+        return agent.reject_plan(feedback, model) if agent else False
 
     # endregion
 
@@ -732,63 +497,27 @@ class AgentOS:
     # region Agent 交互
     def continue_run(self, run_id: str, prompt: str, source: str = "user",
                      model: str | None = None, goal: str | None = None) -> bool:
-        """在已有会话上追加一轮对话。可指定 model 覆盖当前会话的模型。"""
+        """恢复 agent 会话。委托到 agent.resume()。"""
+        agent = self._get_agent(run_id)
+        return agent.resume(prompt, source, model, goal) if agent else False
 
-        run_info = self._registry.runs.get(run_id)
-
-        if not run_info:
-            return False
-        if run_info._session and run_info._session.poll() is None:
-            # plan_pending 时进程即将退出，terminate 它以便 continue
-            if run_info.status == RunStatus.PLAN_PENDING:
-                try:
-                    run_info._session.terminate()
-                    run_info._session.wait(timeout=5)
-                except Exception:
-                    pass
-            else:
-                return False
-        if not run_info.session_id:
-            return False
-
-        # 更新 goal（允许运行时设定/覆盖）
-        if goal is not None:
-            run_info.goal = goal if goal else None
-            run_info.goal_retries = 0  # 重置重试计数
-        elif source != "os":
-            # 用户手动 continue → 重置 goal 重试计数，给一次新的机会
-            run_info.goal_retries = 0
-
-        # sanitize prompt 防止 surrogate 进入内存
-        prompt = self._sanitize_unicode(prompt)
-
-        # 模型选择：优先用参数指定的，再用 run_info 原有的，最后用默认值
-        effective_model = model if model is not None else (run_info.model or self.default_model)
-
-        run_info.turn_markers.append((len(run_info.output_events), prompt))
-        # 结构化事件
-        run_info.add_event("turn", index=len(run_info.turn_markers))
-        run_info.add_event("prompt", text=prompt, role="user", source=source)
-
-        logger.info(f"[{run_id[:8]}] continue_run: resume session={run_info.session_id[:13]}, "
-                    f"system_prompt={'YES' if run_info.system_prompt else 'NONE'} "
-                    f"(len={len(run_info.system_prompt) if run_info.system_prompt else 0})")
-
-        # resume 时复用 run_info 原有的 workspace_path，不创建新 workspace
+    def _launch_resume(self, run_info: RunInfo, prompt: str, model: str) -> bool:
+        """resume 会话基础设施层（backend.launch + reader）。"""
         env = os.environ.copy()
         env.update({
-            "AGENT_OS_RUN_ID": run_id,
+            "AGENT_OS_RUN_ID": run_info.run_id,
             "AGENT_OS_PORT": str(self.port),
         })
         if run_info.workspace_path:
             env["AGENT_OS_WORKSPACE"] = run_info.workspace_path
             workspace_cwd = self.project_root
         else:
-            env = build_agent_env(run_id, self.project_root, self.port)
+            env = build_agent_env(run_info.run_id, self.project_root, self.port)
             workspace_cwd = self.project_root
+
         handle = self._backend.launch(
             prompt=prompt,
-            model=effective_model,
+            model=model,
             session_id=None,
             resume_session=run_info.session_id,
             system_prompt=run_info.system_prompt,
@@ -812,19 +541,9 @@ class AgentOS:
 
     # region Agent 控制
     def stop_run(self, run_id: str) -> bool:
-        """终止子进程。"""
-        run_info = self._registry.runs.get(run_id)
-        if not run_info or not run_info._session:
-            return False
-
-        if run_info.status == RunStatus.RUNNING:
-            run_info._session.terminate()
-            self._transition(run_info, RunStatus.STOPPED)
-            run_info.completed_at = datetime.now()
-
-            self._notify_and_save(run_info.run_id)
-            return True
-        return False
+        """终止子进程。委托到 agent.stop()。"""
+        agent = self._get_agent(run_id)
+        return agent.stop() if agent else False
 
     def delete_run(self, run_id: str, recursive: bool = True) -> int:
         """删除一个 run。RUNNING 的会先 stop。recursive=True 时递归删除所有子孙。
@@ -865,6 +584,7 @@ class AgentOS:
         except Exception:
             pass
         del self._registry.runs[run_id]
+        self._agents.pop(run_id, None)
         return deleted + 1
 
     # ---------- rewind ----------
@@ -886,48 +606,11 @@ class AgentOS:
         return result
 
     def handle_send(self, run_id: str, msg: str) -> bool:
-        """处理 send.py 发来的消息。会处理 supervisor 审查裁决。"""
-        ri = self._registry.runs.get(run_id)
-        if not ri:
+        """处理 send.py 发来的消息。委托到 agent.on_send()。"""
+        agent = self._get_agent(run_id)
+        if not agent:
             return False
-        ri.messages.append({"time": datetime.now().isoformat(), "msg": msg})
-        ri.add_event("send", text=msg)
-
-        waiting_sup_id = getattr(ri, '_waiting_supervisor', None)
-        graph_active = getattr(ri, '_supervisor_graph_active', False)
-        if not waiting_sup_id and not graph_active:
-            return True
-
-        msg_upper = msg.strip().upper()
-        if graph_active:
-            # SupervisorGraph 模式：resume graph with verdict
-            if msg_upper.startswith("PASS"):
-                ri.add_event("system", text="[Agent OS] Supervisor: PASS — task complete")
-                finished = self._supervisor_graph.resume_supervisor(run_id, "PASS")
-                if not finished:
-                    self._mark_dirty()
-                    return True
-                ri.supervisor = None
-                self._orchestrator.on_run_completed(ri)
-            elif msg_upper.startswith("CORRECTION"):
-                ri.add_event("system", text=f"[Agent OS] Supervisor correction: {msg[:200]}")
-                finished = self._supervisor_graph.resume_supervisor(run_id, msg.strip())
-                if not finished:
-                    self._mark_dirty()
-                    return True
-        else:
-            # fallback：旧逻辑（_waiting_supervisor）
-            if msg_upper.startswith("PASS"):
-                object.__setattr__(ri, '_waiting_supervisor', None)
-                ri.supervisor = None
-                ri.add_event("system", text="[Agent OS] Supervisor: PASS — task complete")
-                self._orchestrator.on_run_completed(ri)
-            elif msg_upper.startswith("CORRECTION"):
-                object.__setattr__(ri, '_waiting_supervisor', None)
-                ri.add_event("system", text=f"[Agent OS] Supervisor correction: {msg[:200]}")
-                self.continue_run(run_id, msg.strip(), source="os")
-        self._mark_dirty()
-        return True
+        return agent.on_send(msg)
 
     def clear_context(self, run_id: str) -> dict:
         ri = self._registry.runs.get(run_id)
@@ -1016,48 +699,19 @@ class AgentOS:
 
 
 
-    MAX_GOAL_RETRIES = 5
-
     # endregion
 
 
     # region Goal / Supervisor
     def set_goal(self, run_id: str, goal: str, max_retries: int | None = None) -> bool:
-        """为此 run 设置 goal。可指定 max_retries（None=使用全局默认 MAX_GOAL_RETRIES）。"""
-        run_info = self._registry.runs.get(run_id)
-        if not run_info:
-            return False
-        run_info.goal = goal
-        run_info.goal_retries = 0
-        # 动态覆盖每个 run 的最大重试次数
-        if max_retries is not None:
-            run_info._max_goal_retries = max_retries
-        logger.info(f"[{run_id[:8]}] set_goal: \"{goal}\" (max_retries={max_retries})")
-
-        return True
+        """为此 run 设置 goal。委托到 agent.set_goal()。"""
+        agent = self._get_agent(run_id)
+        return agent.set_goal(goal, max_retries) if agent else False
 
     def skip_goal(self, run_id: str) -> bool:
-        """停止该 run 的 goal 评估重试循环。"""
-        run_info = self._registry.runs.get(run_id)
-        if not run_info:
-            return False
-        run_info.goal_retries = getattr(run_info, '_max_goal_retries', self.MAX_GOAL_RETRIES)
-        logger.info(f"[{run_id[:8]}] skip_goal: goal retries maxed out, goal evaluation disabled")
-        return True
-
-
-    def _try_record_step_completion(self, run_info: RunInfo, result: str) -> None:
-        """标记 DAG step 完成 + 记忆层记录（幂等，仅首次生效）。"""
-        # 1. DAG 状态更新
-        if run_info.step_id and run_info.workspace_path:
-            try:
-                dag = dp.load_dag(run_info.workspace_path)
-                steps = dag.get("steps", [])
-                if dp.mark_done(steps, run_info.step_id):
-                    dp.save_dag(run_info.workspace_path, dag)
-                    logger.info(f"[{run_info.run_id[:8]}] DAG step marked done: {run_info.step_id}")
-            except Exception as e:
-                logger.warning(f"[{run_info.run_id[:8]}] DAG mark_done failed: {e}")
+        """停止该 run 的 goal 评估重试循环。委托到 agent.skip_goal()。"""
+        agent = self._get_agent(run_id)
+        return agent.skip_goal() if agent else False
 
 
     # endregion

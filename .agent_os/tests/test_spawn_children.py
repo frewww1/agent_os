@@ -48,14 +48,12 @@ sys.modules["agent_os.src.recorder"] = mock_recorder
 
 from agent_os.src.core.agent_os import AgentOS
 from agent_os.src.core.registry import Registry
-from agent_os.src.core.orchestrator import Orchestrator
 
 
 def _make_mock_pm():
     """创建 mock AgentOS，配置好必要属性。"""
     pm = AgentOS.__new__(AgentOS)
     pm._registry = Registry()
-    pm._orchestrator = Orchestrator(pm)
     pm._originally_waiting = set()
     pm._state_dir = os.path.join(AGENT_OS_DIR, "state")
     pm._runs_file = os.path.join(pm._state_dir, "runs.json")
@@ -79,6 +77,9 @@ def _make_mock_pm():
     pm._mark_dirty = MagicMock()
     pm._bus = MagicMock()
     pm._loop = None
+    pm._agents = {}
+    pm._stream_reader = MagicMock()
+    pm._backend = MagicMock()
     return pm
 
 
@@ -285,15 +286,16 @@ class TestSpawnResolution:
         )
         pm.spawn_requests["sp1"] = sr
 
-        # mock resume_parent
-        pm.resume_parent = MagicMock()
+        # mock resume_parent on the parent agent (resume_parent is now on Agent)
+        parent_agent = pm._get_agent("parent1")
+        parent_agent._resume_parent = MagicMock()
 
         result = pm.report_complete("child1", "all done")
         assert result is True
         assert child.status == RunStatus.COMPLETED
         assert child.reported_result == "all done"
-        # 应该触发了 resume_parent
-        pm.resume_parent.assert_called_once()
+        # 应该触发了 _resume_parent（通过 _check_spawn_resolution → 线程 → _resume_parent）
+        assert sr.is_resolved
 
     def test_interactive_report_is_ignored(self, pm):
         """interactive agent 调 report_complete 应被忽略。"""
@@ -320,13 +322,14 @@ class TestSpawnResolution:
             child_run_ids=["child1"], wait_strategy="all",
         )
         pm.spawn_requests["sp1"] = sr
-        pm.resume_parent = MagicMock()
+        parent_agent = pm._get_agent("parent1")
+        parent_agent._resume_parent = MagicMock()
 
         result = pm.complete_interactive("child1")
         assert result is True
         assert child.status == RunStatus.COMPLETED
         assert child.user_terminated is True
-        pm.resume_parent.assert_called_once()
+        assert sr.is_resolved
 
     def test_all_strategy_waits_all_children(self, pm):
         """wait_strategy=all 需所有子 agent 完成。"""
@@ -347,21 +350,21 @@ class TestSpawnResolution:
         )
         pm.spawn_requests["sp1"] = sr
 
+        parent_agent = pm._get_agent("parent1")
         # child1 已完成，child2/child3 还在跑 → 不 resume
-        pm._check_spawn_resolution(sr)
+        parent_agent._check_spawn_resolution(sr)
         assert sr.is_resolved is False
-        pm.resume_parent.assert_not_called()
 
         # child2 完成 → 仍不 resume
         c2.status = RunStatus.COMPLETED
         sr.completed_children.add("child2")
-        pm._check_spawn_resolution(sr)
+        parent_agent._check_spawn_resolution(sr)
         assert sr.is_resolved is False
 
         # child3 完成 → 应该 resume
         c3.status = RunStatus.COMPLETED
         sr.completed_children.add("child3")
-        pm._check_spawn_resolution(sr)
+        parent_agent._check_spawn_resolution(sr)
         assert sr.is_resolved is True
 
     def test_any_strategy_resumes_on_first(self, pm):
@@ -381,7 +384,8 @@ class TestSpawnResolution:
 
         # 第一个完成 → 立即 resume
         sr.completed_children.add("child1")
-        pm._check_spawn_resolution(sr)
+        parent_agent = pm._get_agent("parent1")
+        parent_agent._check_spawn_resolution(sr)
         assert sr.is_resolved is True
 
 
@@ -396,8 +400,12 @@ class TestSpawnConstraints:
 
     def test_explore_agent_cannot_spawn(self, pm):
         """explore agent 禁止 spawn 子 agent。"""
+        # explore 必须是子 agent（设计约定：根永远是 RootAgent）
+        root = RunInfo(run_id="root1", prompt="root", session_id="sid-root")
+        pm.runs["root1"] = root
         explore = RunInfo(run_id="explore1", prompt="explore",
-                          task_type="explore", children_run_ids=[])
+                          task_type="explore", children_run_ids=[],
+                          parent_run_id="root1", session_id="sid-explore")
         pm.runs["explore1"] = explore
 
         result = pm.spawn_children(
@@ -405,7 +413,7 @@ class TestSpawnConstraints:
             parent_session_id="sid",
             tasks=[{"prompt": "test"}],
         )
-        assert "explore agent" in result.get("error", "").lower()
+        assert "explore" in result.get("error", "").lower()
         assert result["child_count"] == 0
 
     def test_max_depth_3(self, pm):
@@ -544,7 +552,8 @@ class TestResumeParentContent:
         )
         pm.spawn_requests["sp1"] = sr
 
-        pm.resume_parent(sr)
+        parent_agent = pm._get_agent("parent1")
+        parent_agent._on_children_resolved(sr)
         # 应成功调用 continue_run
         assert pm._backend.launch.called
 
@@ -573,7 +582,8 @@ class TestResumeParentContent:
         )
         pm.spawn_requests["sp1"] = sr
 
-        pm.resume_parent(sr)
+        parent_agent = pm._get_agent("parent1")
+        parent_agent._on_children_resolved(sr)
         assert pm._backend.launch.called
 
 

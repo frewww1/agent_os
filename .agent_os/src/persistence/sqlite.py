@@ -119,7 +119,7 @@ def _auto_resume_stalled_parents(pm) -> None:
                 ri.status = RunStatus.COMPLETED
                 ri.completed_at = ri.completed_at or __import__('datetime').datetime.now()
                 ri.add_event("system", text="[Agent OS] Recovered after restart")
-                pm._on_run_completed(ri)
+                pm.on_run_completed(ri)
                 pm._mark_dirty()
             continue
 
