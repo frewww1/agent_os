@@ -10,9 +10,9 @@ for pkg, loc in [("agent_os", _this_dir), ("agent_os.src", _this_dir / "src")]:
         spec.loader.exec_module(mod)
 
 os.environ["AGENT_OS_BACKEND"] = "codebuddy-sdk"
-from agent_os.src.core.process_manager import ProcessManager
+from agent_os.src.core.agent_os import AgentOS
 
-pm = ProcessManager(project_root=os.getcwd(), cli_command="codebuddy", port=9999)
+pm = AgentOS(project_root=os.getcwd(), cli_command="codebuddy", port=9999)
 run = pm.get_run("1ed2adbe")
 if not run:
     print("Run not found in memory, checking sqlite...")

@@ -6,7 +6,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from ..src.core.process_manager import ProcessManager
+from ..src.core.agent_os import AgentOS
 
 app = FastAPI(title="Agent OS")
 
@@ -14,13 +14,13 @@ DASHBOARD_DIR = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=DASHBOARD_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=DASHBOARD_DIR / "templates")
 
-# Process manager (initialized in main.py)
-pm: ProcessManager | None = None
+# AgentOS 实例（由 main.py 注入）
+agent_os: AgentOS | None = None
 
 
-def set_process_manager(process_manager: ProcessManager):
-    global pm
-    pm = process_manager
+def set_agent_os(aos: AgentOS):
+    global agent_os
+    agent_os = aos
 
 
 @app.get("/", response_class=HTMLResponse)

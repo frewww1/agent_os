@@ -2,13 +2,11 @@
 
 使用 pydantic.BaseModel 替代 dataclass，提供自动序列化/验证/JSON 导出。
 """
-import asyncio
-import subprocess
-import threading
+from dataclasses import dataclass
 from collections import deque
 from datetime import datetime
 from enum import Enum
-from typing import Any, Callable, Optional
+from typing import Optional
 
 from pydantic import BaseModel, Field, ConfigDict
 
@@ -52,7 +50,6 @@ class RunInfo(BaseModel):
     goal: Optional[str] = None
     goal_retries: int = 0
     supervisor: Optional[str] = None  # 监督 Agent 的 system prompt（非空则启用监督模式）
-    output_lines: deque = Field(default_factory=lambda: deque(maxlen=10000))
     output_events: deque = Field(default_factory=lambda: deque(maxlen=10000))
     turn_markers: list = Field(default_factory=list)
     spawn_id: Optional[str] = None
@@ -72,11 +69,15 @@ class RunInfo(BaseModel):
         object.__setattr__(self, '_session', None)
         object.__setattr__(self, '_reader_thread', None)
         object.__setattr__(self, '_new_output_event', None)
-        object.__setattr__(self, '_loop', None)
-        object.__setattr__(self, '_dirty_callback', None)
+        object.__setattr__(self, '_bus', None)
+        # supervisor / goal 运行时字段（原幽灵字段，显式声明）
+        object.__setattr__(self, '_active_supervisor', None)
+        object.__setattr__(self, '_waiting_supervisor', None)
+        object.__setattr__(self, '_max_goal_retries', None)
+        object.__setattr__(self, '_supervisor_done', False)
 
     def add_event(self, kind: str, **payload) -> dict:
-        """追加结构化事件（前端按 kind 渲染）。同时唤醒 SSE 流。"""
+        """追加结构化事件（前端按 kind 渲染）。通过 EventBus 分发副作用。"""
         self._event_seq += 1
         event = {
             "seq": self._event_seq,
@@ -86,24 +87,11 @@ class RunInfo(BaseModel):
         }
         event.update(payload)
         self.output_events.append(event)
-        # 唤醒 SSE 监听者
-        if self._loop and self._new_output_event:
-            try:
-                self._loop.call_soon_threadsafe(self._new_output_event.set)
-            except RuntimeError:
-                pass  # loop 已关闭
-        # 标记需要持久化
-        if self._dirty_callback is not None:
-            try:
-                self._dirty_callback()
-            except Exception:
-                pass
+        # 通过 EventBus 分发：唤醒 SSE（run.event）+ 标脏持久化（run.dirty）
+        if self._bus:
+            self._bus.publish("run.event", run_id=self.run_id, event=event)
+            self._bus.publish("run.dirty", run_id=self.run_id)
         return event
-
-    def add_text_line(self, line: str, kind: str = "system") -> None:
-        """兼容写法：同时追加到 output_lines（旧 API）和 output_events。"""
-        self.output_lines.append(line)
-        self.add_event(kind, text=line)
 
     def to_jsonable(self) -> dict:
         """导出为可 JSON 序列化的字典。对话事件从 jsonl 恢复，只存 OS 注入事件。"""
@@ -152,3 +140,16 @@ class SpawnRequest(BaseModel):
     wait_strategy: str = "all"  # "all" or "any"
     completed_children: set = Field(default_factory=set)
     is_resolved: bool = False
+
+
+@dataclass
+class CompletionSignal:
+    """agent 完成信号 — 原始事实，不定型。由触发源产出，Orchestrator 消费。
+
+    触发源（_read_output / report_complete / complete_interactive / idle 超时）
+    只填原始事实，状态定型由 Orchestrator 的 transition() 统一处理。
+    """
+    run_id: str
+    exit_code: int | None = None
+    reported_result: str | None = None
+    source: str = ""  # "process_exit" | "report" | "user_done" | "idle_timeout"

@@ -11,15 +11,15 @@ from fastapi.responses import JSONResponse, Response
 router = APIRouter(prefix="/api", tags=["export"])
 
 
-def get_pm():
-    from ..app import pm
-    return pm
+def get_agent_os():
+    from ..app import agent_os
+    return agent_os
 
 
 def _get_project_root() -> Path | None:
-    pm = get_pm()
-    if pm:
-        return Path(pm.project_root)
+    agent_os = get_agent_os()
+    if agent_os:
+        return Path(agent_os.project_root)
     return None
 
 
@@ -30,23 +30,25 @@ def _safe_run(*args, **kwargs):
 
 @router.get("/models")
 async def list_models(refresh: bool = False):
-    pm = get_pm()
-    if not pm:
+    agent_os = get_agent_os()
+    if not agent_os:
         return JSONResponse({"models": []})
-    return JSONResponse({"models": pm.list_models(refresh=refresh)})
+    return JSONResponse({"models": agent_os.list_models(refresh=refresh)})
 
 
 @router.get("/run/{run_id}/diffs")
 async def get_run_diffs(run_id: str):
-    pm = get_pm()
-    if not pm:
+    agent_os = get_agent_os()
+    if not agent_os:
         return JSONResponse({"error": "not initialized"}, status_code=500)
-    ri = pm.get_run(run_id)
+    if not agent_os.recorder:
+        return JSONResponse({"error": "git disabled", "turns": [], "agent": None, "steps": []})
+    ri = agent_os.get_run(run_id)
     if not ri or not ri.workspace_path:
         return JSONResponse({"error": "run not found or no workspace"}, status_code=404)
     ws = ri.workspace_path
     result = {"turns": [], "agent": None, "steps": []}
-    for tc in pm.recorder.turn_commits(run_id, ws):
+    for tc in agent_os.recorder.turn_commits(run_id, ws):
         turn_diff = _commit_diff(tc["sha"], ws)
         result["turns"].append({
             "turn": tc["turn"], "sha": tc["sha"][:8],
@@ -60,7 +62,7 @@ async def get_run_diffs(run_id: str):
         result["agent"] = {
             "sha": full_sha, "diff": agent_diff["diff"], "files": agent_diff["files"],
         }
-    for sc in pm.recorder.list_step_commits(ws):
+    for sc in agent_os.recorder.list_step_commits(ws):
         step_diff = _commit_diff(sc["sha"], ws)
         result["steps"].append({
             "step_id": sc["step_id"], "sha": sc["sha"][:8],
@@ -95,10 +97,10 @@ def _commit_diff(sha: str, ws: str, is_range: bool = False) -> dict:
 
 @router.get("/run/{run_id}/export")
 async def export_run(run_id: str, format: str = "md"):
-    pm = get_pm()
-    if not pm:
+    agent_os = get_agent_os()
+    if not agent_os:
         return JSONResponse({"error": "not initialized"}, status_code=500)
-    run_info = pm.get_run(run_id)
+    run_info = agent_os.get_run(run_id)
     if not run_info:
         return JSONResponse({"error": "run not found"}, status_code=404)
     if format == "json":
@@ -200,8 +202,8 @@ def _scan_items(root: Path, item_type: str) -> list:
 
 @router.get("/completions")
 async def get_completions():
-    pm = get_pm()
-    project_root = Path(pm.project_root) if pm else Path.cwd()
+    agent_os = get_agent_os()
+    project_root = Path(agent_os.project_root) if agent_os else Path.cwd()
     codebuddy_dir = project_root / ".codebuddy"
     return JSONResponse({
         "skills": _scan_items(codebuddy_dir / "skills", "skill"),
@@ -212,8 +214,9 @@ async def get_completions():
 
 @router.get("/recordings")
 async def get_recordings():
-    from agent_os.src.persistence.git_recorder import Recorder as _Recorder
-    recorder = _Recorder(project_root=str(_get_project_root()) if _get_project_root() else None)
+    return JSONResponse([])  # TODO: git 功能暂时禁用
+    # from agent_os.src.persistence.git_recorder import Recorder as _Recorder
+    # recorder = _Recorder(project_root=str(_get_project_root()) if _get_project_root() else None)
     workspaces_dir = Path(__file__).parent.parent.parent / "workspaces"
     all_recordings = []
     state_file = Path(__file__).parent.parent.parent / "state" / "runs.json"

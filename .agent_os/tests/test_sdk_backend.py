@@ -9,7 +9,7 @@ import time
 # 把 src 加入 path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from backend import CodeBuddySDKBackend, SessionHandle, _QueueLineReader
+from agent_os.src.agent.backend import CodeBuddySDKBackend, SessionHandle, _QueueLineReader
 
 
 def test_sdk_stream():

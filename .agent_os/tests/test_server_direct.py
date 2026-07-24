@@ -14,13 +14,13 @@ for pkg, loc in [("agent_os", _this_dir), ("agent_os.src", _this_dir / "src")]:
 os.environ["AGENT_OS_BACKEND"] = "codebuddy-sdk"
 
 # 直接 import 验证
-from agent_os.src.core.process_manager import ProcessManager
-from agent_os.dashboard.app import app, set_process_manager
+from agent_os.src.core.agent_os import AgentOS
+from agent_os.dashboard.app import app, set_agent_os
 import asyncio
 
-pm = ProcessManager(project_root=os.getcwd(), cli_command="codebuddy", port=19551)
-set_process_manager(pm)
-print("ProcessManager OK, models:", pm.list_models())
+agent_os = AgentOS(project_root=os.getcwd(), cli_command="codebuddy", port=19551)
+set_agent_os(agent_os)
+print("AgentOS OK, models:", agent_os.list_models())
 
 # 测试 API（不启动 uvicorn，直接调 FastAPI TestClient）
 from fastapi.testclient import TestClient

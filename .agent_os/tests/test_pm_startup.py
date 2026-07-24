@@ -1,4 +1,4 @@
-"""最小化测试 ProcessManager 启动。"""
+"""最小化测试 AgentOS 启动。"""
 import sys, os, importlib.util
 from pathlib import Path
 
@@ -11,11 +11,11 @@ for pkg, loc in [("agent_os", _this_dir), ("agent_os.src", _this_dir / "src")]:
         spec.loader.exec_module(mod)
 
 os.environ["AGENT_OS_BACKEND"] = "codebuddy-sdk"
-from agent_os.src.core.process_manager import ProcessManager
+from agent_os.src.core.agent_os import AgentOS
 
-pm = ProcessManager(project_root=os.getcwd(), cli_command="codebuddy", port=18420)
-print("ProcessManager created OK")
-print("Models:", pm.list_models())
+agent_os = AgentOS(project_root=os.getcwd(), cli_command="codebuddy", port=18420)
+print("AgentOS created OK")
+print("Models:", agent_os.list_models())
 
 # 跑一个简单的 run
 run_id = pm.start_run(

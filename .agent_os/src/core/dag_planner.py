@@ -211,3 +211,23 @@ def mark_failed(steps: list[dict], step_id: str) -> bool:
     s["status"] = "failed"
     s["completed_at"] = datetime.now().isoformat()
     return True
+
+
+def resolve_task_type(task: dict, workspace_path: str | None = None) -> str:
+    """从 task dict 解析 agent 类型，优先用显式字段，否则从 dag.json 回退。"""
+    task_type = task.get("type") or task.get("agent_type") or task.get("subagent_type")
+    if task_type:
+        return task_type
+    step_id = task.get("step_id")
+    if step_id and workspace_path:
+        try:
+            dag = load_dag(workspace_path)
+            for s in dag.get("steps", []):
+                if s.get("id") == step_id:
+                    dag_type = s.get("type", "generative")
+                    if dag_type:
+                        return dag_type
+                    break
+        except Exception:
+            pass
+    return "generative"

@@ -23,7 +23,7 @@ for pkg, loc in [("agent_os", _this_dir), ("agent_os.src", _this_dir / "src")]:
         sys.modules[pkg] = mod
         spec.loader.exec_module(mod)
 
-from agent_os.src.backend import (
+from agent_os.src.agent.backend import (
     AgentBackend, get_backend, SessionHandle,
     NativeBackend, CodeBuddySDKBackend,
 )

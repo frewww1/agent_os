@@ -27,9 +27,9 @@ if "agent_os" not in sys.modules:
     src_pkg.__package__ = "agent_os.src"
     sys.modules["agent_os.src"] = src_pkg
 
-# 导入模块（在包注入之后）
-from agent_os.src.models import RunStatus, RunInfo, SpawnRequest
-from agent_os.src.dag_planner import topo_order, ready_steps
+# 导入模块（在包注入之后）— 修正路径：模块在 src/core/ 下
+from agent_os.src.core.models import RunStatus, RunInfo, SpawnRequest
+from agent_os.src.core.dag_planner import topo_order, ready_steps
 
 # 在导入 process_manager 之前，先确保子模块可用
 sys.path.insert(0, AGENT_OS_DIR)
@@ -39,7 +39,9 @@ mock_recorder = types.ModuleType("agent_os.src.recorder")
 mock_recorder.Recorder = MagicMock
 sys.modules["agent_os.src.recorder"] = mock_recorder
 
-from agent_os.src.process_manager import ProcessManager
+from agent_os.src.core.agent_os import AgentOS
+from agent_os.src.core.registry import Registry
+from agent_os.src.core.orchestrator import Orchestrator
 
 
 class TestAgentTypeLifecycle:
@@ -47,10 +49,10 @@ class TestAgentTypeLifecycle:
 
     @pytest.fixture
     def pm(self):
-        """创建 mock ProcessManager。"""
-        pm = ProcessManager.__new__(ProcessManager)
-        pm.runs = {}
-        pm.spawn_requests = {}
+        """创建 mock AgentOS。"""
+        pm = AgentOS.__new__(AgentOS)
+        pm._registry = Registry()
+        pm._orchestrator = Orchestrator(pm)
         pm._originally_waiting = set()
         pm._state_dir = os.path.join(AGENT_OS_DIR, "state")
         pm._runs_file = os.path.join(pm._state_dir, "runs.json")
@@ -75,6 +77,7 @@ class TestAgentTypeLifecycle:
         pm.recorder._git_cwd = MagicMock(return_value=AGENT_OS_DIR)
 
         pm._mark_dirty = MagicMock()
+        pm._bus = MagicMock()
         pm._loop = None  # no event loop in test environment
         return pm
 
@@ -270,9 +273,9 @@ class TestAgentTypeLifecycle:
     def test_root_system_prompt_contains_mcp_tools(self, pm):
         """根 agent system prompt 包含 MCP 工具列表。"""
         prompt = pm._build_root_system_prompt()
-        assert "os_spawn" in prompt
-        assert "os_report" in prompt
-        assert "os_send" in prompt
+        assert "Task tool" in prompt
+        assert "report.py" in prompt
+        assert "send.py" in prompt
         assert "Workspace" in prompt
         assert "Agent OS" in prompt
 
@@ -283,24 +286,25 @@ class TestAgentTypeLifecycle:
             task_prompt="do something",
             workspace_path="/tmp/ws/test"
         )
-        assert "os_spawn" in prompt
-        assert "os_report" in prompt
-        assert "os_send" in prompt
+        assert "Task tool" in prompt
+        assert "report.py" in prompt
+        assert "send.py" in prompt
         assert "sub-agent" in prompt.lower()
         assert "do something" in prompt
         assert "Workspace" in prompt
 
-    def test_subagent_prompt_no_longer_differentiates_types(self, pm):
-        """generative 和 interactive 的子 agent prompt 内容相同。"""
+    def test_subagent_prompt_differentiates_types(self, pm):
+        """generative 和 interactive 的子 agent prompt 有不同的完成指导。"""
         gen = pm._build_subagent_system_prompt("generative", "task A")
         inter = pm._build_subagent_system_prompt("interactive", "task B")
-        # 两者都不应包含旧的行为指导
-        assert "call report.py" not in gen.lower()
-        assert "call report.py" not in inter.lower()
-        assert "Do NOT call" not in gen
-        assert "Do NOT call" not in inter
-        assert "EXACTLY ONCE" not in gen
-        assert "EXACTLY ONCE" not in inter
+        # generative 要求 report.py
+        assert "report.py" in gen
+        assert "MANDATORY" in gen
+        # interactive 禁止 report.py
+        assert "Do NOT call report.py" in inter
+        # 两者都有 Workspace
+        assert "Workspace" in gen
+        assert "Workspace" in inter
 
     # ---- Depth limit 测试 ----
 
@@ -349,9 +353,9 @@ class TestTaskTypeResolution:
 
     @pytest.fixture
     def pm(self):
-        pm = ProcessManager.__new__(ProcessManager)
-        pm.runs = {}
-        pm.spawn_requests = {}
+        pm = AgentOS.__new__(AgentOS)
+        pm._registry = Registry()
+        pm._orchestrator = Orchestrator(pm)
         pm._originally_waiting = set()
         pm._state_dir = os.path.join(AGENT_OS_DIR, "state")
         pm._runs_file = os.path.join(pm._state_dir, "runs.json")

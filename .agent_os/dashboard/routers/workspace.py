@@ -14,15 +14,15 @@ router = APIRouter(prefix="/api", tags=["workspace"])
 WORKSPACES_DIR = Path(__file__).parent.parent.parent / "workspaces"
 
 
-def get_pm():
-    from ..app import pm
-    return pm
+def get_agent_os():
+    from ..app import agent_os
+    return agent_os
 
 
 def _get_project_root() -> Path | None:
-    pm = get_pm()
-    if pm:
-        return Path(pm.project_root)
+    agent_os = get_agent_os()
+    if agent_os:
+        return Path(agent_os.project_root)
     return None
 
 
@@ -34,9 +34,9 @@ def _get_git_dir() -> Path | None:
 
 
 def _get_workspace_dir(run_id: str) -> Path:
-    pm = get_pm()
-    if pm:
-        ri = pm.get_run(run_id)
+    agent_os = get_agent_os()
+    if agent_os:
+        ri = agent_os.get_run(run_id)
         if ri and ri.workspace_path:
             return Path(ri.workspace_path)
     return WORKSPACES_DIR / run_id
@@ -76,8 +76,8 @@ async def list_workspaces():
 
 @router.post("/workspace/delete")
 async def delete_workspace(req: dict):
-    pm = get_pm()
-    if not pm:
+    agent_os = get_agent_os()
+    if not agent_os:
         return JSONResponse({"error": "not initialized"}, status_code=500)
     name = (req or {}).get("workspace")
     if not name or not isinstance(name, str):
@@ -90,7 +90,7 @@ async def delete_workspace(req: dict):
         return norm.rsplit("/", 1)[-1] if norm else ""
 
     target_root_ids = []
-    for ri in list(pm.runs.values()):
+    for ri in list(agent_os._registry.runs.values()):
         if ri.parent_run_id:
             continue
         if _ws_tail(getattr(ri, "workspace_path", "") or "") == name:
@@ -102,7 +102,7 @@ async def delete_workspace(req: dict):
     ws_paths_to_purge = set()
 
     def _collect_ws(rid: str):
-        ri = pm.runs.get(rid)
+        ri = agent_os._registry.runs.get(rid)
         if not ri:
             return
         if ri.workspace_path:
@@ -116,7 +116,7 @@ async def delete_workspace(req: dict):
     deleted_runs = 0
     deleted_roots = 0
     for rid in target_root_ids:
-        n = pm.delete_run(rid, recursive=True)
+        n = agent_os.delete_run(rid, recursive=True)
         if n > 0:
             deleted_roots += 1
             deleted_runs += n

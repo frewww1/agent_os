@@ -1,6 +1,6 @@
 """Goal & Supervisor 核心逻辑测试。
 
-直接测试 ProcessManager 的 goal/supervisor 方法，
+直接测试 AgentOS 的 goal/supervisor 方法，
 使用 mock backend 避免实际 SDK 调用。
 
     python .agent_os/tests/test_goal_supervisor.py
@@ -20,7 +20,8 @@ for pkg, loc in [("agent_os", _this_dir), ("agent_os.src", _this_dir / "src")]:
 
 os.environ["AGENT_OS_BACKEND"] = "codebuddy-sdk"
 
-from agent_os.src.core.process_manager import ProcessManager, RunStatus
+from agent_os.src.core.agent_os import AgentOS
+from agent_os.src.core.models import RunStatus
 from agent_os.src.core.models import RunInfo
 from agent_os.src.agent.backend import SessionHandle, AgentBackend
 
@@ -118,7 +119,7 @@ class MockBackend(AgentBackend):
 # Setup
 # ============================================================================
 mock = MockBackend()
-pm = ProcessManager(project_root=os.getcwd(), cli_command="codebuddy", port=19599)
+pm = AgentOS(project_root=os.getcwd(), cli_command="codebuddy", port=19599)
 pm._backend = mock  # 注入 mock backend
 pm.default_model = "mock-model"
 

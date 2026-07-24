@@ -1,4 +1,4 @@
-"""端到端测试：ProcessManager + SDK Backend 全链路。
+"""端到端测试：AgentOS + SDK Backend 全链路。
 
 验证：
 1. 模型列表获取
@@ -36,7 +36,7 @@ if _src_pkg_name not in sys.modules:
 import asyncio
 os.environ["AGENT_OS_BACKEND"] = "codebuddy-sdk"
 
-from agent_os.src.core.process_manager import ProcessManager
+from agent_os.src.core.agent_os import AgentOS
 from agent_os.src.core.models import RunStatus
 
 
@@ -53,7 +53,7 @@ def wait_for_status(pm, run_id, target_status, timeout=60):
 
 def test_model_list():
     print("=== Test 1: Model List ===")
-    pm = ProcessManager(project_root=os.getcwd(), cli_command="codebuddy", port=9999)
+    pm = AgentOS(project_root=os.getcwd(), cli_command="codebuddy", port=9999)
     models = pm.list_models(refresh=True)
     print(f"  Models: {models}")
     assert len(models) > 0, "No models returned"
@@ -63,7 +63,7 @@ def test_model_list():
 
 def test_start_run(model):
     print(f"=== Test 2: Start Run (model={model}) ===")
-    pm = ProcessManager(project_root=os.getcwd(), cli_command="codebuddy", port=9999)
+    pm = AgentOS(project_root=os.getcwd(), cli_command="codebuddy", port=9999)
 
     run_id = pm.start_run(
         prompt="Reply with exactly 'START_OK' and nothing else.",
@@ -115,7 +115,7 @@ def test_continue_run(pm, run_id, session_id, model):
 
 def test_stop_run(model):
     print(f"=== Test 4: Stop Run ===")
-    pm = ProcessManager(project_root=os.getcwd(), cli_command="codebuddy", port=9999)
+    pm = AgentOS(project_root=os.getcwd(), cli_command="codebuddy", port=9999)
 
     run_id = pm.start_run(
         prompt="Write a Python script that prints numbers 1 to 100, one per line.",

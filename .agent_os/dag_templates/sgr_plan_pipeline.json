@@ -35,7 +35,7 @@
     {
       "id": "client_data_analysis",
       "name": "客户端数据分析",
-      "prompt": "use_skill(client_data_analysis)｜用户需提供预制体节点树。读取 $AGENT_OS_WORKSPACE/sub_requirements.md，分析每个 UI 节点需要的数据，为每个子需求生成客户端数据需求文档 $AGENT_OS_WORKSPACE/client_data.md。",
+      "prompt": "use_skill(client_data_analysis)｜用户需提供预制体节点树。读取 $AGENT_OS_WORKSPACE/sub_requirements.md 和所有 sub_req_N.md，分析每个 UI 节点需要的数据，将客户端数据需求追加写入每个 sub_req_N.md 的末尾。",
       "depends_on": ["req_decompose"],
       "type": "interactive"
     }

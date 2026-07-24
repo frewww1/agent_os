@@ -13,7 +13,7 @@
     {
       "id": "explore_req",
       "name": "需求探索",
-      "prompt": "use_skill(sgr-explore-req)｜从 $AGENT_OS_WORKSPACE/.change_name 读取变更名称。读取 $AGENT_OS_WORKSPACE/../requirement.md（父级 workspace 的需求文档）和 $AGENT_OS_WORKSPACE/../sub_requirements.md，确认本子需求范围。",
+      "prompt": "use_skill(sgr-explore-req)｜从 $AGENT_OS_WORKSPACE/.change_name 读取变更名称。向用户确认本次分析的目标需求文档（通常为 sub_req_N.md），确认需求范围和业务意图。",
       "depends_on": ["init_change"],
       "type": "interactive"
     },

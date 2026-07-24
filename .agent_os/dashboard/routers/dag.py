@@ -14,15 +14,15 @@ router = APIRouter(prefix="/api", tags=["dag"])
 DAG_TEMPLATES_DIR = Path(__file__).parent.parent.parent / "dag_templates"
 
 
-def get_pm():
-    from ..app import pm
-    return pm
+def get_agent_os():
+    from ..app import agent_os
+    return agent_os
 
 
 def _get_project_root() -> Path | None:
-    pm = get_pm()
-    if pm:
-        return Path(pm.project_root)
+    agent_os = get_agent_os()
+    if agent_os:
+        return Path(agent_os.project_root)
     return None
 
 
@@ -62,10 +62,10 @@ async def list_dag_templates():
 
 @router.post("/dag/start")
 async def start_dag(req: DagStartRequest):
-    pm = get_pm()
-    if not pm:
+    agent_os = get_agent_os()
+    if not agent_os:
         return JSONResponse({"error": "not initialized"}, status_code=500)
-    from agent_os.src.persistence.git_recorder import Recorder as _Recorder
+    # from agent_os.src.persistence.git_recorder import Recorder as _Recorder  # TODO: git 功能暂时禁用
 
     aos_dir = Path(__file__).parent.parent.parent
     ws_dir = aos_dir / "workspaces" / req.workspace_name
@@ -103,27 +103,28 @@ async def start_dag(req: DagStartRequest):
         dag_file = ws_dir / "dag.json"
         dag_file.write_text(json.dumps(dag, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    try:
-        project_root = str(_get_project_root()) if _get_project_root() else None
-        rec = _Recorder(project_root=project_root)
-        rec.ensure_task_branch(str(ws_dir), agent_name=req.workspace_name)
-        rec.baseline_commit(str(ws_dir), agent_name=req.workspace_name)
-        if not req.resume:
-            rec.step_done(run_id="init", step_id="__init__",
-                          workspace_path=str(ws_dir), message="DAG initialized")
-        else:
-            from agent_os.src.core import dag_planner as dp
-            dag = dp.load_dag(str(ws_dir))
-            steps_list = dag.get("steps", [])
-            reset_count = 0
-            for s in steps_list:
-                if s.get("status") == "running":
-                    s["status"] = "pending"
-                    reset_count += 1
-            if reset_count > 0:
-                dp.save_dag(str(ws_dir), dag)
-    except Exception:
-        pass
+    # git 功能暂时禁用
+    # try:
+    #     project_root = str(_get_project_root()) if _get_project_root() else None
+    #     rec = _Recorder(project_root=project_root)
+    #     rec.ensure_task_branch(str(ws_dir), agent_name=req.workspace_name)
+    #     rec.baseline_commit(str(ws_dir), agent_name=req.workspace_name)
+    #     if not req.resume:
+    #         rec.step_done(run_id="init", step_id="__init__",
+    #                       workspace_path=str(ws_dir), message="DAG initialized")
+    #     else:
+    #         from agent_os.src.core import dag_planner as dp
+    #         dag = dp.load_dag(str(ws_dir))
+    #         steps_list = dag.get("steps", [])
+    #         reset_count = 0
+    #         for s in steps_list:
+    #             if s.get("status") == "running":
+    #                 s["status"] = "pending"
+    #                 reset_count += 1
+    #         if reset_count > 0:
+    #             dp.save_dag(str(ws_dir), dag)
+    # except Exception:
+    #     pass
 
     steps_desc = "\n".join(
         f"  {i+1}. {s.get('name', s['id'])} ({s['id']}){' ← ' + ', '.join(s.get('depends_on', [])) if s.get('depends_on') else ''}"
@@ -152,7 +153,7 @@ async def start_dag(req: DagStartRequest):
     )
     prompt = f"请继续执行 DAG，任务名: {req.workspace_name}" if req.resume \
         else f"请执行 DAG 模板: {req.template_id}，任务名: {req.workspace_name}"
-    run_id = pm.start_run(prompt=prompt, agent_name=req.workspace_name,
+    run_id = agent_os.start_run(prompt=prompt, agent_name=req.workspace_name,
                           model=req.model, workspace_name=req.workspace_name,
                           system_prompt=system_prompt)
     return JSONResponse({"run_id": run_id, "template": req.template_id, "resume": req.resume})
@@ -160,13 +161,13 @@ async def start_dag(req: DagStartRequest):
 
 @router.get("/run/{run_id}/dag")
 async def get_dag(run_id: str, workspace_id: str = ""):
-    pm = get_pm()
-    if not pm:
+    agent_os = get_agent_os()
+    if not agent_os:
         return JSONResponse({"error": "not initialized"}, status_code=500)
     if workspace_id:
-        result = pm.dag_status_by_workspace(workspace_id)
+        result = agent_os.dag_status_by_workspace(workspace_id)
     else:
-        result = pm.dag_status(run_id)
+        result = agent_os.dag_status(run_id)
     if not result.get("ok"):
         return JSONResponse({"error": result.get("error", "no dag")}, status_code=400)
     return JSONResponse(result)
@@ -174,13 +175,13 @@ async def get_dag(run_id: str, workspace_id: str = ""):
 
 @router.post("/run/{run_id}/dag/checkout")
 async def dag_checkout(run_id: str, req: dict):
-    pm = get_pm()
-    if not pm:
+    agent_os = get_agent_os()
+    if not agent_os:
         return JSONResponse({"error": "not initialized"}, status_code=500)
     step_id = req.get("step_id")
     if not step_id:
         return JSONResponse({"error": "step_id required"}, status_code=400)
-    result = pm.dag_checkout(run_id, step_id,
+    result = agent_os.dag_checkout(run_id, step_id,
                              rerun_downstream=bool(req.get("rerun_downstream")))
     if not result.get("ok"):
         return JSONResponse({"error": result.get("error", "checkout failed")}, status_code=400)
@@ -218,15 +219,16 @@ async def dag_steps(workspace_id: str):
 
 @router.get("/dag/{workspace_id}/checkout/{step_id}")
 async def dag_checkout_step(workspace_id: str, step_id: str):
-    from agent_os.src.persistence.git_recorder import Recorder as _Recorder
-    from agent_os.src.core.dag_planner import reset_steps
-
-    project_root = str(_get_project_root()) if _get_project_root() else None
-    recorder = _Recorder(project_root=project_root)
-    ws_dir = _resolve_workspace_dir(workspace_id)
-    if not ws_dir:
-        return JSONResponse({"error": "workspace not found"}, status_code=404)
-    result = recorder.checkout_step(step_id, str(ws_dir))
+    return JSONResponse({"error": "git disabled"}, status_code=400)
+    # from agent_os.src.persistence.git_recorder import Recorder as _Recorder  # TODO: git 功能暂时禁用
+    # from agent_os.src.core.dag_planner import reset_steps
+    # 
+    # project_root = str(_get_project_root()) if _get_project_root() else None
+    # recorder = _Recorder(project_root=project_root)
+    # ws_dir = _resolve_workspace_dir(workspace_id)
+    # if not ws_dir:
+    #     return JSONResponse({"error": "workspace not found"}, status_code=404)
+    # result = recorder.checkout_step(step_id, str(ws_dir))
     if not result.get("ok"):
         return JSONResponse({"error": result.get("error", "checkout failed")}, status_code=404)
     dag_file = Path(ws_dir) / "dag.json"

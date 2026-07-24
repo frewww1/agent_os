@@ -20,7 +20,7 @@ import uvicorn
 
 # 此目录 .agent_os 因含 "." 前缀不能直接作为 Python 包名导入。
 # 用 importlib 把它注册为名为 "agent_os" 的虚拟包，使 dashboard/app.py 等
-# 子模块的相对导入（from ..process_manager import ...）能正常工作。
+# 子模块的相对导入（from ..agent_os import ...）能正常工作。
 _this_dir = Path(__file__).parent
 _pkg_name = "agent_os"
 if _pkg_name not in sys.modules:
@@ -45,8 +45,8 @@ if _src_pkg_name not in sys.modules:
     sys.modules[_src_pkg_name] = _src_pkg
     _src_spec.loader.exec_module(_src_pkg)
 
-from agent_os.src.core.process_manager import ProcessManager
-from agent_os.dashboard.app import app, set_process_manager
+from agent_os.src.core.agent_os import AgentOS
+from agent_os.dashboard.app import app, set_agent_os
 
 
 def _load_cli_config():
@@ -87,10 +87,10 @@ def main():
     backend_type = args.backend or default_backend
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    pm = ProcessManager(project_root=project_root, cli_command=args.cli, port=args.port,
+    agent_os = AgentOS(project_root=project_root, cli_command=args.cli, port=args.port,
                         default_model=args.model, loop=loop,
                         backend_type=backend_type)
-    set_process_manager(pm)
+    set_agent_os(agent_os)
 
     url = f"http://{args.host}:{args.port}"
     print()

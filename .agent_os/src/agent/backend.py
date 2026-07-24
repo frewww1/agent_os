@@ -1,7 +1,7 @@
 """Agent OS 后端适配器 — 统一 Agent 抽象层。
 
 每种后端（CLI/SDK/第三方）实现 AgentBackend 协议。
-ProcessManager 只通过此协议操作 agent，不感知底层实现。
+AgentOS 只通过此协议操作 agent，不感知底层实现。
 
 核心方法：
 - launch()         启动/继续会话，返回 SessionHandle
@@ -47,7 +47,7 @@ class SessionHandle:
     """启动 agent 后返回的会话句柄。
 
     统一了 CLI 的 subprocess.Popen 和 SDK 的线程对象。
-    ProcessManager 通过此句柄操作 agent，不区分底层实现。
+    AgentOS 通过此句柄操作 agent，不区分底层实现。
     """
 
     # 进程/线程控制

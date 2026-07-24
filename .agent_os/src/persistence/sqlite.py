@@ -118,7 +118,7 @@ def _auto_resume_stalled_parents(pm) -> None:
                 logger.info(f"auto-complete RUNNING agent {run_id[:8]} (dead CLI, supervisor active)")
                 ri.status = RunStatus.COMPLETED
                 ri.completed_at = ri.completed_at or __import__('datetime').datetime.now()
-                ri.add_text_line("[Agent OS] Recovered after restart", kind="system")
+                ri.add_event("system", text="[Agent OS] Recovered after restart")
                 pm._on_run_completed(ri)
                 pm._mark_dirty()
             continue
@@ -281,7 +281,7 @@ def load_runs_from_disk(pm) -> None:
         logger.warning(f"load_runs from sqlite failed: {e}")
 
     logger.info(f"loaded {total} historical runs ({len(seen_run_ids)} unique) from sqlite")
-    pm._restore_spawn_requests()
+    pm._registry.restore_spawn_requests()
     _auto_resume_stalled_parents(pm)
 
 
