@@ -53,22 +53,41 @@ if %errorlevel% neq 0 (
 for /f "tokens=3" %%v in ('git --version 2^>^&1') do echo   [OK] Git %%v
 
 :: ============================================================
-:: 3. CodeBuddy CLI
+:: 3. Choose AI CLI
 :: ============================================================
-echo [3/5] Checking CodeBuddy CLI...
-where codebuddy >nul 2>&1
+echo [3/5] Choosing AI CLI...
+echo.
+echo   Available CLI:
+echo   [1] CodeBuddy CLI ^(recommended, supports SDK mode^)
+echo   [2] Claude Code CLI ^(native mode only^)
+echo.
+set /p CLI_CHOICE="   Choose (1 or 2, default=1): "
+if "%CLI_CHOICE%"=="" set CLI_CHOICE=1
+
+set CLI_NAME=codebuddy
+if "%CLI_CHOICE%"=="2" set CLI_NAME=claude
+
+echo   Checking %CLI_NAME% CLI...
+where %CLI_NAME% >nul 2>&1
 if %errorlevel% neq 0 (
-    echo   CodeBuddy CLI not found. Installing...
-    call npm install -g @anthropic-ai/codebuddy-cli 2>nul
-    if !errorlevel! neq 0 (
-        echo   [ERROR] Failed to install CodeBuddy CLI.
-        echo           Try: npm install -g @anthropic-ai/codebuddy-cli
+    if "%CLI_CHOICE%"=="1" (
+        echo   CodeBuddy CLI not found. Installing...
+        call npm install -g @anthropic-ai/codebuddy-cli 2>nul
+        if !errorlevel! neq 0 (
+            echo   [ERROR] Failed to install CodeBuddy CLI.
+            echo           Try: npm install -g @anthropic-ai/codebuddy-cli
+            pause
+            exit /b 1
+        )
+        echo   [OK] CodeBuddy CLI installed
+    ) else (
+        echo   [ERROR] %CLI_NAME% CLI not found.
+        echo           Install from: https://docs.anthropic.com/en/docs/claude-code
         pause
         exit /b 1
     )
-    echo   [OK] CodeBuddy CLI installed
 ) else (
-    echo   [OK] CodeBuddy CLI found
+    echo   [OK] %CLI_NAME% CLI found
 )
 
 :: ============================================================
@@ -116,9 +135,16 @@ set /p BE_CHOICE="   Choose (1 or 2, default=1): "
 if "%BE_CHOICE%"=="" set BE_CHOICE=1
 
 set BACKEND=native
-if "%BE_CHOICE%"=="2" set BACKEND=codebuddy-sdk
+if "%BE_CHOICE%"=="2" (
+    if "%CLI_NAME%"=="claude" (
+        echo   [WARN] Claude does not support SDK mode, falling back to native.
+        set BACKEND=native
+    ) else (
+        set BACKEND=codebuddy-sdk
+    )
+)
 
-echo {"cli": "codebuddy", "backend": "%BACKEND%"} > "%cd%\cli_config.json"
+echo {"cli": "%CLI_NAME%", "backend": "%BACKEND%"} > "%cd%\cli_config.json"
 echo   Config saved: .agent_os\cli_config.json
 
 :: ============================================================

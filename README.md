@@ -18,8 +18,11 @@
 ### 环境要求
 
 - Python 3.10+
-- [CodeBuddy CLI](https://www.codebuddy.ai/)
 - Git
+- 任意一种 AI CLI（三选一）：
+  - [CodeBuddy CLI](https://www.codebuddy.ai/)（推荐，原生支持）
+  - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)（通过 Native 模式支持）
+  - 其他兼容 CLI
 
 ### 启动
 
@@ -34,11 +37,15 @@
 编辑 `.agent_os/cli_config.json`：
 
 ```json
-{"cli": "codebuddy", "backend": "native"}          // CLI 模式
-{"cli": "codebuddy", "backend": "codebuddy-sdk"}   // SDK 模式
+// 使用 CodeBuddy（推荐，支持 SDK 加速）
+{"cli": "codebuddy", "backend": "native"}
+{"cli": "codebuddy", "backend": "codebuddy-sdk"}
+
+// 使用 Claude Code
+{"cli": "claude", "backend": "native"}
 ```
 
-重启生效。
+Native 模式通过 subprocess 启动任意 CLI，理论上支持所有兼容 CodeBuddy/Claude 协议的 CLI 工具。重启生效。
 
 ---
 
