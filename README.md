@@ -4,11 +4,12 @@
 
 ## 亮点
 
-- **DAG 任务流水线**：定义步骤依赖，自动并行执行。支持回退到任意 step，代码和状态一起恢复
+- **Autonomous Loop 自主循环**：Agent 自主完成复杂任务的循环机制 — 执行 → 评估 → 决策 → 修正，无需人工介入，像 Reinforcement Learning 的 Agentic 实现
+- **DAG Graph 编排图**：可视化 DAG 拓扑图，节点状态实时着色，依赖关系一目了然
+- **DAG 任务流水线**：定义步骤依赖，自动并行执行。支持回退到任意 step，从中间重新跑
 - **Supervisor 监督者**：为 Agent 指派专属监督者，持续审查产出并指导修正，记住上下文
 - **Goal 目标评估**：设定任务目标，完成后自动语义判断是否达成，未达成自动重试
 - **多 Agent 协同**：Agent 可动态 spawn 子 Agent，共享 workspace，最多 3 层嵌套
-- **对话回退**：随时回退到任意对话位置，Agent 自动"忘记"被截断的内容
 
 ---
 
@@ -42,6 +43,20 @@
 ---
 
 ## 核心功能
+
+### Autonomous Loop 自主循环
+
+像 Reinforcement Learning 的 Agentic 实现 — Agent 在自主循环中持续工作：执行子任务 → 评估结果 → 决策是否重试 → 修正后继续，直到所有 step 通过或达到上限。调度 Agent 通过 `autonomous-loop.py` 脚本管理循环状态，全程无需人工介入。
+
+```
+INIT → EXECUTE (spawn 子 Agent) → EVALUATE (判断结果)
+         ↑                              ↓
+         └──── RETRY (注入反馈) ←── FAIL/PASS ──→ 下一步 / 完成
+```
+
+### DAG Graph 编排图
+
+前端内嵌 SVG 拓扑图，实时展示 DAG 步骤的依赖关系和执行状态。节点颜色随状态变化（pending / running / done / failed），一目了然。
 
 ### DAG 任务流水线
 
