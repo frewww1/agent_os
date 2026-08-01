@@ -174,7 +174,7 @@ def _restore_events_with_jsonl(pm, ri, r, os_events_backup: list) -> None:
                     parsed = parse_cli_session_jsonl(line)
                     if not parsed:
                         try:
-                            from ..core.stream_parser import parse_stream_json_events
+                            from ..agent.stream_parser import parse_stream_json_events
                             parsed = parse_stream_json_events(line)
                         except Exception:
                             pass

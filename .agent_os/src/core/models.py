@@ -2,13 +2,14 @@
 
 使用 pydantic.BaseModel 替代 dataclass，提供自动序列化/验证/JSON 导出。
 """
-from dataclasses import dataclass
 from collections import deque
 from datetime import datetime
 from enum import Enum
 from typing import Optional
 
 from pydantic import BaseModel, Field, ConfigDict
+
+from .infra.event_bus import EventBus
 
 
 class RunStatus(str, Enum):
@@ -64,12 +65,10 @@ class RunInfo(BaseModel):
         super().__init__(**data)
         # 运行时字段默认值
         object.__setattr__(self, '_fallback_result', None)
-        object.__setattr__(self, '_recorded', False)
         object.__setattr__(self, '_event_seq', 0)
         object.__setattr__(self, '_session', None)
         object.__setattr__(self, '_reader_thread', None)
         object.__setattr__(self, '_new_output_event', None)
-        object.__setattr__(self, '_bus', None)
         # supervisor / goal 运行时字段（原幽灵字段，显式声明）
         object.__setattr__(self, '_active_supervisor', None)
         object.__setattr__(self, '_waiting_supervisor', None)
@@ -89,10 +88,10 @@ class RunInfo(BaseModel):
         }
         event.update(payload)
         self.output_events.append(event)
-        # 通过 EventBus 分发：唤醒 SSE（run.event）+ 标脏持久化（run.dirty）
-        if self._bus:
-            self._bus.publish("run.event", run_id=self.run_id, event=event)
-            self._bus.publish("run.dirty", run_id=self.run_id)
+        # 通过 EventBus 单例分发：唤醒 SSE（run.event）+ 标脏持久化（run.dirty）
+        bus = EventBus.instance()
+        bus.publish("run.event", run_id=self.run_id, event=event)
+        bus.publish("run.dirty", run_id=self.run_id)
         return event
 
     def to_jsonable(self) -> dict:

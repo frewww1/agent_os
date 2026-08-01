@@ -1,0 +1,234 @@
+.FFFF.....F...FF                                                         [100%]
+================================== FAILURES ===================================
+__________________ TestGoalGraph.test_run_goal_met_first_try __________________
+tests\test_goal_graph.py:35: in test_run_goal_met_first_try
+    finished = gg.run("r1", "do something", max_retries=3)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\core\graph\goal.py:101: in run
+    result = self._graph.invoke({
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\pregel\main.py:3880: in invoke
+    for chunk in self.stream(
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\pregel\main.py:2936: in stream
+    for _ in runner.tick(
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\pregel\_runner.py:207: in tick
+    run_with_retry(
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\pregel\_retry.py:585: in run_with_retry
+    return task.proc.invoke(task.input, config)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\_internal\_runnable.py:684: in invoke
+    input = context.run(step.invoke, input, config, **kwargs)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\_internal\_runnable.py:426: in invoke
+    ret = self.func(*args, **kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\core\graph\goal.py:44: in _evaluate
+    is_met, reason = self._pm._get_agent(ri.run_id)._evaluate_goal()
+    ^^^^^^^^^^^^^^
+E   ValueError: not enough values to unpack (expected 2, got 0)
+E   During task with name 'evaluate' and id '5051e233-1ea7-8dbc-a64e-21d1b1bdbbb1'
+---------------------------- Captured stderr call -----------------------------
+2026-07-26 14:38:47,022 [INFO] [GoalGraph] starting goal eval for r1: do something
+------------------------------ Captured log call ------------------------------
+INFO     agent_os:goal.py:100 [GoalGraph] starting goal eval for r1: do something
+____________ TestGoalGraph.test_run_goal_not_met_triggers_feedback ____________
+tests\test_goal_graph.py:44: in test_run_goal_not_met_triggers_feedback
+    finished = gg.run("r1", "do something", max_retries=3)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\core\graph\goal.py:101: in run
+    result = self._graph.invoke({
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\pregel\main.py:3880: in invoke
+    for chunk in self.stream(
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\pregel\main.py:2936: in stream
+    for _ in runner.tick(
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\pregel\_runner.py:207: in tick
+    run_with_retry(
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\pregel\_retry.py:585: in run_with_retry
+    return task.proc.invoke(task.input, config)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\_internal\_runnable.py:684: in invoke
+    input = context.run(step.invoke, input, config, **kwargs)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\_internal\_runnable.py:426: in invoke
+    ret = self.func(*args, **kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\core\graph\goal.py:44: in _evaluate
+    is_met, reason = self._pm._get_agent(ri.run_id)._evaluate_goal()
+    ^^^^^^^^^^^^^^
+E   ValueError: not enough values to unpack (expected 2, got 0)
+E   During task with name 'evaluate' and id '7498a016-454c-c005-32a8-02c38d5e72b1'
+---------------------------- Captured stderr call -----------------------------
+2026-07-26 14:38:47,221 [INFO] [GoalGraph] starting goal eval for r1: do something
+------------------------------ Captured log call ------------------------------
+INFO     agent_os:goal.py:100 [GoalGraph] starting goal eval for r1: do something
+______________ TestGoalGraph.test_run_goal_max_retries_exhausted ______________
+tests\test_goal_graph.py:55: in test_run_goal_max_retries_exhausted
+    finished = gg.run("r1", "do something", max_retries=0)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\core\graph\goal.py:101: in run
+    result = self._graph.invoke({
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\pregel\main.py:3880: in invoke
+    for chunk in self.stream(
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\pregel\main.py:2936: in stream
+    for _ in runner.tick(
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\pregel\_runner.py:207: in tick
+    run_with_retry(
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\pregel\_retry.py:585: in run_with_retry
+    return task.proc.invoke(task.input, config)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\_internal\_runnable.py:684: in invoke
+    input = context.run(step.invoke, input, config, **kwargs)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\_internal\_runnable.py:426: in invoke
+    ret = self.func(*args, **kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\core\graph\goal.py:44: in _evaluate
+    is_met, reason = self._pm._get_agent(ri.run_id)._evaluate_goal()
+    ^^^^^^^^^^^^^^
+E   ValueError: not enough values to unpack (expected 2, got 0)
+E   During task with name 'evaluate' and id '6acc3a0c-5237-0628-1b02-71b0671789bf'
+---------------------------- Captured stderr call -----------------------------
+2026-07-26 14:38:47,313 [INFO] [GoalGraph] starting goal eval for r1: do something
+------------------------------ Captured log call ------------------------------
+INFO     agent_os:goal.py:100 [GoalGraph] starting goal eval for r1: do something
+___________ TestGoalGraph.test_evaluate_node_uses_pm_evaluate_goal ____________
+tests\test_goal_graph.py:65: in test_evaluate_node_uses_pm_evaluate_goal
+    result = gg._evaluate(state)
+             ^^^^^^^^^^^^^^^^^^^
+src\core\graph\goal.py:44: in _evaluate
+    is_met, reason = self._pm._get_agent(ri.run_id)._evaluate_goal()
+    ^^^^^^^^^^^^^^
+E   ValueError: not enough values to unpack (expected 2, got 0)
+_______________ TestSupervisorGraph.test_spawn_supervisor_node ________________
+tests\test_supervisor_graph.py:37: in test_spawn_supervisor_node
+    assert result["supervisor_run_id"] == "sup1"
+E   AssertionError: assert <MagicMock name='mock._get_agent()._spawn_supervisor()' id='1604768082848'> == 'sup1'
+---------------------------- Captured stderr call -----------------------------
+2026-07-26 14:38:47,434 [INFO] [SupervisorGraph] spawned supervisor <MagicMock name='mock._get_agent()._spawn_supervisor().__getitem__()' id='1604768083520'> for agent r1
+------------------------------ Captured log call ------------------------------
+INFO     agent_os:supervisor.py:53 [SupervisorGraph] spawned supervisor <MagicMock name='mock._get_agent()._spawn_supervisor().__getitem__()' id='1604768083520'> for agent r1
+_________________ TestSupervisorGraph.test_run_pass_first_try _________________
+tests\test_supervisor_graph.py:74: in test_run_pass_first_try
+    finished = sg.run("r1")
+               ^^^^^^^^^^^^
+src\core\graph\supervisor.py:119: in run
+    result = self._graph.invoke({
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\pregel\main.py:3880: in invoke
+    for chunk in self.stream(
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\pregel\main.py:2868: in stream
+    with SyncPregelLoop(
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\pregel\_loop.py:1695: in __exit__
+    return self.stack.__exit__(exc_type, exc_value, traceback)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\contextlib.py:619: in __exit__
+    raise exc
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\contextlib.py:604: in __exit__
+    if cb(*exc_details):
+       ^^^^^^^^^^^^^^^^
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\pregel\_executor.py:117: in __exit__
+    task.result()
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\concurrent\futures\_base.py:443: in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\concurrent\futures\_base.py:395: in __get_result
+    raise self._exception
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\pregel\_executor.py:80: in done
+    task.result()
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\concurrent\futures\_base.py:443: in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\concurrent\futures\_base.py:395: in __get_result
+    raise self._exception
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\concurrent\futures\thread.py:86: in run
+    result = ctx.run(self.task)
+             ^^^^^^^^^^^^^^^^^^
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\concurrent\futures\thread.py:73: in run
+    return fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\checkpoint\sqlite\__init__.py:478: in put_writes
+    *self.serde.dumps_typed(value),
+     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\checkpoint\serde\jsonplus.py:271: in dumps_typed
+    raise exc
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\checkpoint\serde\jsonplus.py:267: in dumps_typed
+    return "msgpack", _msgpack_enc(obj)
+                      ^^^^^^^^^^^^^^^^^
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\checkpoint\serde\jsonplus.py:860: in _msgpack_enc
+    return ormsgpack.packb(data, default=_msgpack_default, option=_option)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   TypeError: Type is not msgpack serializable: MagicMock
+---------------------------- Captured stderr call -----------------------------
+2026-07-26 14:38:47,460 [INFO] [SupervisorGraph] starting review for agent r1
+2026-07-26 14:38:47,462 [INFO] [SupervisorGraph] spawned supervisor <MagicMock name='mock._get_agent()._spawn_supervisor().__getitem__()' id='1604768085872'> for agent r1
+------------------------------ Captured log call ------------------------------
+INFO     agent_os:supervisor.py:118 [SupervisorGraph] starting review for agent r1
+INFO     agent_os:supervisor.py:53 [SupervisorGraph] spawned supervisor <MagicMock name='mock._get_agent()._spawn_supervisor().__getitem__()' id='1604768085872'> for agent r1
+_______________ TestSupervisorGraph.test_resume_supervisor_pass _______________
+tests\test_supervisor_graph.py:84: in test_resume_supervisor_pass
+    sg.run("r1")
+src\core\graph\supervisor.py:119: in run
+    result = self._graph.invoke({
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\pregel\main.py:3880: in invoke
+    for chunk in self.stream(
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\pregel\main.py:2868: in stream
+    with SyncPregelLoop(
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\pregel\_loop.py:1695: in __exit__
+    return self.stack.__exit__(exc_type, exc_value, traceback)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\contextlib.py:619: in __exit__
+    raise exc
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\contextlib.py:604: in __exit__
+    if cb(*exc_details):
+       ^^^^^^^^^^^^^^^^
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\pregel\_executor.py:117: in __exit__
+    task.result()
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\concurrent\futures\_base.py:443: in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\concurrent\futures\_base.py:395: in __get_result
+    raise self._exception
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\pregel\_executor.py:80: in done
+    task.result()
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\concurrent\futures\_base.py:443: in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\concurrent\futures\_base.py:395: in __get_result
+    raise self._exception
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\concurrent\futures\thread.py:86: in run
+    result = ctx.run(self.task)
+             ^^^^^^^^^^^^^^^^^^
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\concurrent\futures\thread.py:73: in run
+    return fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\checkpoint\sqlite\__init__.py:478: in put_writes
+    *self.serde.dumps_typed(value),
+     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\checkpoint\serde\jsonplus.py:271: in dumps_typed
+    raise exc
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\checkpoint\serde\jsonplus.py:267: in dumps_typed
+    return "msgpack", _msgpack_enc(obj)
+                      ^^^^^^^^^^^^^^^^^
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\checkpoint\serde\jsonplus.py:860: in _msgpack_enc
+    return ormsgpack.packb(data, default=_msgpack_default, option=_option)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   TypeError: Type is not msgpack serializable: MagicMock
+---------------------------- Captured stderr call -----------------------------
+2026-07-26 14:38:50,271 [INFO] [SupervisorGraph] starting review for agent r1
+2026-07-26 14:38:50,274 [INFO] [SupervisorGraph] spawned supervisor <MagicMock name='mock._get_agent()._spawn_supervisor().__getitem__()' id='1604636164176'> for agent r1
+------------------------------ Captured log call ------------------------------
+INFO     agent_os:supervisor.py:118 [SupervisorGraph] starting review for agent r1
+INFO     agent_os:supervisor.py:53 [SupervisorGraph] spawned supervisor <MagicMock name='mock._get_agent()._spawn_supervisor().__getitem__()' id='1604636164176'> for agent r1
+============================== warnings summary ===============================
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langchain_core\utils\pydantic.py:41
+  C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langchain_core\utils\pydantic.py:41: UserWarning: Core Pydantic V1 functionality isn't compatible with Python 3.14 or greater.
+    from pydantic.v1 import BaseModel as BaseModelV1
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_goal_graph.py::TestGoalGraph::test_run_goal_met_first_try
+FAILED tests/test_goal_graph.py::TestGoalGraph::test_run_goal_not_met_triggers_feedback
+FAILED tests/test_goal_graph.py::TestGoalGraph::test_run_goal_max_retries_exhausted
+FAILED tests/test_goal_graph.py::TestGoalGraph::test_evaluate_node_uses_pm_evaluate_goal
+FAILED tests/test_supervisor_graph.py::TestSupervisorGraph::test_spawn_supervisor_node
+FAILED tests/test_supervisor_graph.py::TestSupervisorGraph::test_run_pass_first_try
+FAILED tests/test_supervisor_graph.py::TestSupervisorGraph::test_resume_supervisor_pass
+7 failed, 9 passed, 1 warning in 7.11s

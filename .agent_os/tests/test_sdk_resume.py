@@ -1,52 +1,43 @@
 """测试 SDK 多轮对话（session resume）。"""
-import sys, os, json, queue, threading, time
+import sys, os, threading
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-from backend import CodeBuddySDKBackend, FakeProcess
+from agent_os.src.agent import CodeBuddySDKBackend, SDKHandle
 
 
 def run_sdk(prompt, resume_session=None, session_id=None, system_prompt=None):
-    """运行一次 SDK 调用，返回 (lines, session_id)。"""
+    """运行一次 SDK 调用，返回 (events, session_id)。"""
     backend = CodeBuddySDKBackend()
-    q = queue.Queue()
-    stop = threading.Event()
-    backend._output_queue = q
-    backend._stop_event = stop
-    fp = FakeProcess(q, stop)
+    handle = SDKHandle(session_id=session_id or "")
 
     def _run():
         try:
             backend._call_sdk(
+                handle=handle,
                 prompt=prompt, model="", session_id=session_id,
                 resume_session=resume_session, system_prompt=system_prompt,
-                mcp_config=None, cwd=os.getcwd(), env=None, stop=stop,
+                cwd=os.getcwd(), env=None, stop=handle._stop,
             )
         except Exception as e:
-            q.put(json.dumps({"type": "error", "error": str(e)}) + "\n")
+            backend._emit_event(handle, "error", error=str(e))
         finally:
-            stop.set()
-            fp._returncode = 0
-            q.put(None)
+            handle._stop.set()
+            handle._events_queue.put(None)
 
     t = threading.Thread(target=_run, daemon=True)
+    handle._thread = t
     t.start()
 
-    lines = []
+    events = []
     extracted_session = None
-    for line in iter(fp.stdout.readline, ""):
-        stripped = line.strip()
-        if stripped:
-            lines.append(stripped)
-            try:
-                obj = json.loads(stripped)
-                if obj.get("type") == "result":
-                    extracted_session = obj.get("session_id", "")
-                elif obj.get("type") == "system" and obj.get("subtype") == "init":
-                    extracted_session = obj.get("session_id", "") or extracted_session
-            except json.JSONDecodeError:
-                pass
+    for ev in backend.stream(handle):
+        events.append(ev)
+        if ev.get("kind") == "result":
+            extracted_session = ev.get("session_id", "")
+        elif ev.get("kind") == "system":
+            extracted_session = ev.get("session_id", "") or extracted_session
     t.join(timeout=5)
-    return lines, extracted_session
+    return events, extracted_session
 
 
 def test_session_resume():

@@ -6,17 +6,29 @@ SupervisorGraph 当前为实验性骨架，未集成到 Orchestrator。
 import pytest
 import tempfile
 from unittest.mock import MagicMock
-from agent_os.src.core.supervisor_graph import SupervisorGraph, SupervisorState
+from agent_os.src.core.graph.supervisor import SupervisorGraph, SupervisorState
 
 
 class TestSupervisorGraph:
     def _make_pm(self):
         pm = MagicMock()
         pm._state_dir = tempfile.gettempdir()
-        pm._spawn_supervisor = MagicMock(return_value="sup1")
-        pm._build_work_context = MagicMock(return_value="agent output")
         pm.continue_run = MagicMock()
-        pm.runs = {"r1": MagicMock()}
+        ri = MagicMock()
+        ri.run_id = "r1"
+        ri.supervisor = "check"
+        ri.goal = "goal"
+        ri.prompt = "prompt"
+        ri.reported_result = "result"
+        ri._fallback_result = None
+        ri.user_terminated = False
+        ri.messages = []
+        pm.runs = {"r1": ri}
+        # _get_agent 返回 mock agent，_spawn_supervisor 在 agent 上
+        agent = MagicMock()
+        agent._spawn_supervisor = MagicMock(return_value="sup1")
+        pm._get_agent = MagicMock(return_value=agent)
+        pm._mock_agent = agent  # 供测试断言
         return pm
 
     def test_graph_creation(self):
@@ -35,7 +47,7 @@ class TestSupervisorGraph:
         )
         result = sg._spawn_supervisor(state)
         assert result["supervisor_run_id"] == "sup1"
-        pm._spawn_supervisor.assert_called_once()
+        pm._mock_agent._spawn_supervisor.assert_called_once()
 
     def test_route_pass_returns_done(self):
         """_route: verdict=PASS → done。"""
@@ -74,7 +86,7 @@ class TestSupervisorGraph:
         finished = sg.run("r1")
         # interrupt 暂停 → run 返回 False（未完成，等 verdict）
         assert finished is False
-        pm._spawn_supervisor.assert_called_once()
+        pm._mock_agent._spawn_supervisor.assert_called_once()
 
     def test_resume_supervisor_pass(self):
         """resume_supervisor 传 PASS → graph 完成。"""

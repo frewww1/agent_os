@@ -3,7 +3,7 @@ import pytest
 pytest.skip("FakeProcess class removed from backend.py", allow_module_level=True)
 import sys, os, json, queue, threading, time
 
-from agent_os.src.agent.backend import CodeBuddySDKBackend
+from agent_os.src.agent import CodeBuddySDKBackend
 
 
 def test_with_model(model_id: str):

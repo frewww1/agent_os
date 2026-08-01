@@ -23,8 +23,8 @@ for pkg, loc in [("agent_os", _this_dir), ("agent_os.src", _this_dir / "src")]:
         sys.modules[pkg] = mod
         spec.loader.exec_module(mod)
 
-from agent_os.src.agent.backend import (
-    AgentBackend, get_backend, SessionHandle,
+from agent_os.src.agent import (
+    AgentBackend, get_backend, SDKHandle,
     NativeBackend, CodeBuddySDKBackend,
 )
 
@@ -98,7 +98,7 @@ def test_list_models(backend: AgentBackend, r: TestResult):
 
 
 def test_launch_returns_handle(backend: AgentBackend, r: TestResult):
-    """launch() 返回 SessionHandle。"""
+    """launch() 返回 SDKHandle。"""
     try:
         handle = backend.launch(
             prompt="Say 'OK' and nothing else.",
@@ -109,8 +109,7 @@ def test_launch_returns_handle(backend: AgentBackend, r: TestResult):
         r.fail(f"launch() raised: {e}")
         return
 
-    r.check(isinstance(handle, SessionHandle), f"returns SessionHandle")
-    r.check(hasattr(handle, "poll"), "handle has poll()")
+    r.check(hasattr(handle, "poll"), f"returns session-like object (has poll)")
     r.check(hasattr(handle, "wait"), "handle has wait()")
     r.check(hasattr(handle, "terminate"), "handle has terminate()")
     r.check(hasattr(handle, "returncode"), "handle has returncode")

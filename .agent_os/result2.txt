@@ -1,0 +1,82 @@
+......................sss.............s.............ss.....ssss.ss...... [ 68%]
+.s....s.FFFF.....F...FFssssssss..                                        [100%]
+================================== FAILURES ===================================
+E   ValueError: not enough values to unpack (expected 2, got 0)
+    During task with name 'evaluate' and id '550ee3a5-20f5-29b5-54b6-0248fb4b26f2'
+---------------------------- Captured stderr call -----------------------------
+2026-07-26 14:38:06,651 [INFO] [GoalGraph] starting goal eval for r1: do something
+------------------------------ Captured log call ------------------------------
+INFO     agent_os:goal.py:100 [GoalGraph] starting goal eval for r1: do something
+g:\svn\trunk_cn\dragon\game\.agent_os\src\core\graph\goal.py:44: ValueError: not enough values to unpack (expected 2, got 0)
+E   ValueError: not enough values to unpack (expected 2, got 0)
+    During task with name 'evaluate' and id 'f01489c2-0d56-5612-045f-8c4d5f83e405'
+---------------------------- Captured stderr call -----------------------------
+2026-07-26 14:38:06,660 [INFO] [GoalGraph] starting goal eval for r1: do something
+------------------------------ Captured log call ------------------------------
+INFO     agent_os:goal.py:100 [GoalGraph] starting goal eval for r1: do something
+g:\svn\trunk_cn\dragon\game\.agent_os\src\core\graph\goal.py:44: ValueError: not enough values to unpack (expected 2, got 0)
+E   ValueError: not enough values to unpack (expected 2, got 0)
+    During task with name 'evaluate' and id '40c72d79-a947-aafc-77c4-899ee7712bff'
+---------------------------- Captured stderr call -----------------------------
+2026-07-26 14:38:06,669 [INFO] [GoalGraph] starting goal eval for r1: do something
+------------------------------ Captured log call ------------------------------
+INFO     agent_os:goal.py:100 [GoalGraph] starting goal eval for r1: do something
+g:\svn\trunk_cn\dragon\game\.agent_os\src\core\graph\goal.py:44: ValueError: not enough values to unpack (expected 2, got 0)
+E   ValueError: not enough values to unpack (expected 2, got 0)
+g:\svn\trunk_cn\dragon\game\.agent_os\src\core\graph\goal.py:44: ValueError: not enough values to unpack (expected 2, got 0)
+E   AssertionError: assert <MagicMock name='mock._get_agent()._spawn_supervisor()' id='2446035553312'> == 'sup1'
+---------------------------- Captured stderr call -----------------------------
+2026-07-26 14:38:06,703 [INFO] [SupervisorGraph] spawned supervisor <MagicMock name='mock._get_agent()._spawn_supervisor().__getitem__()' id='2446035553984'> for agent r1
+------------------------------ Captured log call ------------------------------
+INFO     agent_os:supervisor.py:53 [SupervisorGraph] spawned supervisor <MagicMock name='mock._get_agent()._spawn_supervisor().__getitem__()' id='2446035553984'> for agent r1
+G:\svn\trunk_cn\dragon\game\.agent_os\tests\test_supervisor_graph.py:37: AssertionError: assert <MagicMock name='mock._get_agent()._spawn_supervisor()' id='2446035553312'> == 'sup1'
+E   TypeError: Type is not msgpack serializable: MagicMock
+---------------------------- Captured stderr call -----------------------------
+2026-07-26 14:38:06,720 [INFO] [SupervisorGraph] starting review for agent r1
+2026-07-26 14:38:06,722 [INFO] [SupervisorGraph] spawned supervisor <MagicMock name='mock._get_agent()._spawn_supervisor().__getitem__()' id='2446035564064'> for agent r1
+2026-07-26 14:38:09,567 [INFO] save_runs: 28 runs persisted to sqlite
+2026-07-26 14:38:09,568 [INFO] persist: saved 28 runs to disk
+------------------------------ Captured log call ------------------------------
+INFO     agent_os:supervisor.py:118 [SupervisorGraph] starting review for agent r1
+INFO     agent_os:supervisor.py:53 [SupervisorGraph] spawned supervisor <MagicMock name='mock._get_agent()._spawn_supervisor().__getitem__()' id='2446035564064'> for agent r1
+INFO     agent_os:sqlite.py:96 save_runs: 28 runs persisted to sqlite
+INFO     agent_os:_persistence.py:25 persist: saved 28 runs to disk
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\checkpoint\serde\jsonplus.py:860: TypeError: Type is not msgpack serializable: MagicMock
+E   TypeError: Type is not msgpack serializable: MagicMock
+---------------------------- Captured stderr call -----------------------------
+2026-07-26 14:38:09,578 [INFO] [SupervisorGraph] starting review for agent r1
+2026-07-26 14:38:09,582 [INFO] [SupervisorGraph] spawned supervisor <MagicMock name='mock._get_agent()._spawn_supervisor().__getitem__()' id='2448040491536'> for agent r1
+------------------------------ Captured log call ------------------------------
+INFO     agent_os:supervisor.py:118 [SupervisorGraph] starting review for agent r1
+INFO     agent_os:supervisor.py:53 [SupervisorGraph] spawned supervisor <MagicMock name='mock._get_agent()._spawn_supervisor().__getitem__()' id='2448040491536'> for agent r1
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langgraph\checkpoint\serde\jsonplus.py:860: TypeError: Type is not msgpack serializable: MagicMock
+============================== warnings summary ===============================
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langchain_core\utils\pydantic.py:41
+  C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langchain_core\utils\pydantic.py:41: UserWarning: Core Pydantic V1 functionality isn't compatible with Python 3.14 or greater.
+    from pydantic.v1 import BaseModel as BaseModelV1
+
+tests\test_agent_backend.py:35
+  g:\svn\trunk_cn\dragon\game\.agent_os\tests\test_agent_backend.py:35: PytestCollectionWarning: cannot collect test class 'TestResult' because it has a __init__ constructor (from: tests/test_agent_backend.py)
+    class TestResult:
+
+tests/test_spawn_children.py::TestSpawnViaAPI::test_spawn_api_generative
+  C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+tests/test_sdk_backend.py::test_sdk_stream
+tests/test_sdk_backend.py::test_real_sdk_call
+  C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\asyncio\base_events.py:744: RuntimeWarning: coroutine method 'aclose' of 'query' was never awaited
+    self._ready.clear()
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_goal_graph.py::TestGoalGraph::test_run_goal_met_first_try
+FAILED tests/test_goal_graph.py::TestGoalGraph::test_run_goal_not_met_triggers_feedback
+FAILED tests/test_goal_graph.py::TestGoalGraph::test_run_goal_max_retries_exhausted
+FAILED tests/test_goal_graph.py::TestGoalGraph::test_evaluate_node_uses_pm_evaluate_goal
+FAILED tests/test_supervisor_graph.py::TestSupervisorGraph::test_spawn_supervisor_node
+FAILED tests/test_supervisor_graph.py::TestSupervisorGraph::test_run_pass_first_try
+FAILED tests/test_supervisor_graph.py::TestSupervisorGraph::test_resume_supervisor_pass
+7 failed, 76 passed, 22 skipped, 5 warnings in 19.05s

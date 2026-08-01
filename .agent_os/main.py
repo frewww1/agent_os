@@ -69,7 +69,7 @@ def main():
     parser.add_argument("--cli", default=default_cli,
                         help=f"Backend CLI command (default from config: {default_cli})")
     parser.add_argument("--backend", default=None,
-                        help=f"Agent backend: native, codebuddy-sdk, sdk, omnigent (default from config: {default_backend})")
+                        help=f"Agent backend: native, codebuddy-sdk, sdk (default from config: {default_backend})")
     parser.add_argument("--model", default=None,
                         help="Default model for all agents (e.g. claude-sonnet-4.6, gpt-5.1). "
                              "None = use CLI default. Can be overridden per-agent in Dashboard.")

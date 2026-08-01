@@ -1,7 +1,7 @@
 """EventBus 单元测试 — 可单独运行：pytest tests/test_event_bus.py"""
 import threading
 import pytest
-from agent_os.src.core.event_bus import EventBus
+from agent_os.src.core.infra.event_bus import EventBus
 
 
 class TestEventBus:

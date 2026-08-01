@@ -7,7 +7,7 @@ import logging
 import os
 import subprocess
 
-from . import dag_planner as dp
+from . import planner as dp
 
 logger = logging.getLogger("agent_os")
 

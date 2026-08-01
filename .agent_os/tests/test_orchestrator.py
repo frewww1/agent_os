@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 from agent_os.src.core.registry import Registry
 from agent_os.src.core.models import RunInfo, RunStatus, SpawnRequest
 from agent_os.src.core.agent_os import AgentOS
-from agent_os.src.core.agent import Agent
+from agent_os.src.core.agents import Agent
 
 
 class TestAgentExit:
@@ -23,7 +23,6 @@ class TestAgentExit:
         pm.MAX_GOAL_RETRIES = 5
         pm._transition = AgentOS._transition.__get__(pm, AgentOS)
         pm._get_agent = AgentOS._get_agent.__get__(pm, AgentOS)
-        pm.resolve_process_exit = AgentOS.resolve_process_exit.__get__(pm, AgentOS)
         pm.on_run_completed = AgentOS.on_run_completed.__get__(pm, AgentOS)
         pm._sanitize_unicode = lambda x: x
         pm._try_record_step_completion = MagicMock()
@@ -42,7 +41,7 @@ class TestAgentExit:
     def test_plan_pending_no_state_change(self):
         pm = self._make_pm_mock()
         ri = self._make_run(pm, status=RunStatus.PLAN_PENDING)
-        pm.resolve_process_exit(ri, 0)
+        pm._agents[ri.run_id].on_process_exit(0)
         assert ri.status == RunStatus.PLAN_PENDING
         pm._mark_dirty.assert_called_once()
 
@@ -51,26 +50,26 @@ class TestAgentExit:
         # interactive agent 必须是子 agent（设计约定：根不可能是 interactive）
         self._make_run(pm, run_id="p1", status=RunStatus.WAITING)
         ri = self._make_run(pm, status=RunStatus.RUNNING, interactive=True, parent_run_id="p1")
-        pm.resolve_process_exit(ri, 0)
+        pm._agents[ri.run_id].on_process_exit(0)
         assert ri.status == RunStatus.RUNNING
 
     def test_running_reported_result_completes(self):
         pm = self._make_pm_mock()
         ri = self._make_run(pm, status=RunStatus.RUNNING, reported_result="done")
-        pm.resolve_process_exit(ri, 0)
+        pm._agents[ri.run_id].on_process_exit(0)
         assert ri.status == RunStatus.COMPLETED
         assert ri.completed_at is not None
 
     def test_running_root_exit_code_nonzero_fails(self):
         pm = self._make_pm_mock()
         ri = self._make_run(pm, status=RunStatus.RUNNING)
-        pm.resolve_process_exit(ri, 1)
+        pm._agents[ri.run_id].on_process_exit(1)
         assert ri.status == RunStatus.FAILED
 
     def test_running_root_exit_code_zero_completes(self):
         pm = self._make_pm_mock()
         ri = self._make_run(pm, status=RunStatus.RUNNING)
-        pm.resolve_process_exit(ri, 0)
+        pm._agents[ri.run_id].on_process_exit(0)
         assert ri.status == RunStatus.COMPLETED
 
     def test_waiting_all_children_done_completes(self):
@@ -78,7 +77,7 @@ class TestAgentExit:
         ri = self._make_run(pm, run_id="p1", status=RunStatus.WAITING)
         ri.children_run_ids = ["c1"]
         self._make_run(pm, run_id="c1", status=RunStatus.COMPLETED, parent_run_id="p1")
-        pm.resolve_process_exit(ri, 0)
+        pm._agents[ri.run_id].on_process_exit(0)
         assert ri.status == RunStatus.COMPLETED
 
     def test_waiting_children_still_running_no_change(self):
@@ -90,12 +89,12 @@ class TestAgentExit:
             spawn_id="sp1", parent_run_id="p1", parent_session_id="s1",
             child_run_ids=["c1"], wait_strategy="all",
         )
-        pm.resolve_process_exit(ri, 0)
+        pm._agents[ri.run_id].on_process_exit(0)
         assert ri.status == RunStatus.WAITING
 
     def test_running_parent_no_report_fails(self):
         pm = self._make_pm_mock()
         ri = self._make_run(pm, status=RunStatus.RUNNING, parent_run_id="p1")
         self._make_run(pm, run_id="p1", status=RunStatus.WAITING)
-        pm.resolve_process_exit(ri, 0)
+        pm._agents[ri.run_id].on_process_exit(0)
         assert ri.status == RunStatus.FAILED

@@ -33,14 +33,21 @@ if "agent_os" not in sys.modules:
     _src_pkg.__package__ = "agent_os.src"
     sys.modules["agent_os.src"] = _src_pkg
 
-    # 注册子包
+    # 注册子包（真正导入包模块，让 __init__.py 生效）
+    import importlib
     for _sub in ("core", "mcp", "persistence", "scripts", "agent", "hooks"):
         _sub_path = os.path.join(SRC_DIR, _sub)
         if os.path.isdir(_sub_path):
-            _sub_mod = types.ModuleType(f"agent_os.src.{_sub}")
-            _sub_mod.__path__ = [_sub_path]
-            _sub_mod.__package__ = f"agent_os.src.{_sub}"
-            sys.modules[f"agent_os.src.{_sub}"] = _sub_mod
+            _full = f"agent_os.src.{_sub}"
+            if _full not in sys.modules:
+                try:
+                    importlib.import_module(_full)
+                except Exception:
+                    # 回退：创建虚拟模块（兼容无 __init__.py 的目录）
+                    _sub_mod = types.ModuleType(_full)
+                    _sub_mod.__path__ = [_sub_path]
+                    _sub_mod.__package__ = _full
+                    sys.modules[_full] = _sub_mod
 
 
 # ---- fixtures ----

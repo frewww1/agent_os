@@ -7,16 +7,13 @@ import json as _json
 import logging
 import os
 import re
-import shutil
 import subprocess
-
-from ..utils import safe_run
 
 logger = logging.getLogger("agent_os")
 
 # 模型列表缓存文件
 MODELS_CACHE_FILE = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "state", "models.json"
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "state", "models.json"
 )
 
 # ============================================================================
@@ -59,14 +56,16 @@ def _parse_cmd_shim(cli_path: str) -> str | None:
         with open(cli_path, 'r', encoding='utf-8', errors='replace') as f:
             content = f.read()
         m = re.search(r'"%_prog%"\s+"(%dp0%[^"]+)"', content)
-        if not m:
-            return None
-        target_rel = m.group(1)
+        if m:
+            target_rel = m.group(1)
+        else:
+            m = re.search(r'@node\s+"(%~dp0[^"]+)"', content)
+            if not m:
+                return None
+            target_rel = m.group(1)
         dp0 = os.path.dirname(cli_path) + os.sep
-        target_abs = os.path.normpath(target_rel.replace('%dp0%', dp0))
-        if not os.path.exists(target_abs):
-            return None
-        return target_abs
+        target_abs = os.path.normpath(target_rel.replace('%dp0%', dp0).replace('%~dp0', dp0))
+        return target_abs if os.path.exists(target_abs) else None
     except Exception as e:
         logger.warning(f"_parse_cmd_shim failed: {e}")
         return None

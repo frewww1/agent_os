@@ -8,7 +8,7 @@ import os
 import shutil
 from datetime import datetime
 
-from .models import RunInfo, RunStatus
+from ..models import RunInfo, RunStatus
 
 logger = logging.getLogger("agent_os")
 
@@ -147,7 +147,6 @@ class SessionManager:
         ri.user_terminated = False
         ri.exit_code = None
         ri.completed_at = None
-        ri._recorded = False
 
     # ---- clear_context ----
 
@@ -198,4 +197,3 @@ class SessionManager:
         ri.user_terminated = False
         ri.exit_code = None
         ri.completed_at = None
-        ri._recorded = False

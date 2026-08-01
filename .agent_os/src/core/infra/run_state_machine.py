@@ -71,9 +71,3 @@ class RunStateMachine:
             if may_method is None:
                 return False
             return may_method()
-
-    @classmethod
-    def get_graph(cls):
-        """返回状态图（需要 graphviz）。"""
-        machine = cls._get_machine()
-        return machine.get_graph()

@@ -1,9 +1,9 @@
 """核心引擎 — AgentOS, RunInfo, EventBus, Registry, 流式解析。"""
-from .models import RunStatus, RunInfo, SpawnRequest, CompletionSignal
-from .event_bus import EventBus
+from .models import RunStatus, RunInfo, SpawnRequest
+from .infra.event_bus import EventBus
 from .registry import Registry
-from .prompt_builder import PromptBuilder
-from .agent import (
+from .session.prompt import PromptBuilder
+from .agents import (
     Agent,
     RootAgent,
     TaskAgent,
@@ -11,10 +11,9 @@ from .agent import (
     InteractiveAgent,
     SupervisorAgent,
 )
-from .dag_service import DagService
-from .session_manager import SessionManager
-from .goal_graph import GoalGraph
-from .supervisor_graph import SupervisorGraph
-from .stream_reader import StreamReader
-from .run_state_machine import RunStateMachine
+from .dag.service import DagService
+from .session.manager import SessionManager
+from .graph.goal import GoalGraph
+from .graph.supervisor import SupervisorGraph
+from .infra.run_state_machine import RunStateMachine
 from .agent_os import AgentOS

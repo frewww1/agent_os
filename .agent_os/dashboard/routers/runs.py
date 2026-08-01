@@ -80,7 +80,8 @@ async def get_run(run_id: str):
         plan_content = None
         plan_file = None
         if run_info.status.value == "plan_pending":
-            plan_file = agent_os._find_latest_plan_file()
+            from ...src.core.agents import find_latest_plan_file
+            plan_file = find_latest_plan_file()
             if plan_file:
                 try:
                     with open(plan_file, "r", encoding="utf-8", errors="replace") as pf:

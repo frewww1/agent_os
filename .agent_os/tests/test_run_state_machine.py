@@ -3,7 +3,7 @@
 直接测试 RunStateMachine.can_transition 类方法，不依赖 AgentOS。
 """
 import pytest
-from agent_os.src.core.run_state_machine import RunStateMachine
+from agent_os.src.core.infra.run_state_machine import RunStateMachine
 
 
 class TestRunStateMachine:

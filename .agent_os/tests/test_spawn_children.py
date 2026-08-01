@@ -78,7 +78,7 @@ def _make_mock_pm():
     pm._bus = MagicMock()
     pm._loop = None
     pm._agents = {}
-    pm._stream_reader = MagicMock()
+    pm._start_reader = MagicMock()
     pm._backend = MagicMock()
     return pm
 
@@ -598,7 +598,7 @@ class TestSpawnViaAPI:
         pm = _make_mock_pm()
         pm.start_run = MagicMock(return_value="child_api_1")
         pm._build_subagent_system_prompt = MagicMock(return_value="sub sp")
-        set_agent_os(agent_os)
+        set_agent_os(pm)
 
         from fastapi.testclient import TestClient
         return TestClient(app), pm

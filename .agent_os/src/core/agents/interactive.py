@@ -1,0 +1,25 @@
+"""InteractiveAgent — 交互式（用户 Done 完成，忽略 report.py）。"""
+import logging
+
+from .base import Agent
+from ..session.prompt import PromptBuilder
+
+logger = logging.getLogger("agent_os")
+
+
+class InteractiveAgent(Agent):
+    """交互式 — 用户 Done 完成，忽略 report.py。"""
+
+    def build_system_prompt(self) -> str | None:
+        return PromptBuilder.build_subagent_system_prompt(
+            "interactive", self.prompt, self.workspace_path)
+
+    def idle_timeout_enabled(self) -> bool:
+        return False
+
+    def _on_running_exit(self, exit_code: int | None) -> None:
+        logger.debug(f"[{self.run_id[:8]}] Interactive - staying running")
+
+    def on_report(self, result: str) -> bool:
+        logger.info(f"[{self.run_id[:8]}] Interactive report.py — ignored")
+        return True

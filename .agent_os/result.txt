@@ -1,0 +1,24 @@
+......................sss.............s.............ss.....ssss.ss...... [ 68%]
+.s....s................ssssssss..                                        [100%]
+============================== warnings summary ===============================
+C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langchain_core\utils\pydantic.py:41
+  C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\langchain_core\utils\pydantic.py:41: UserWarning: Core Pydantic V1 functionality isn't compatible with Python 3.14 or greater.
+    from pydantic.v1 import BaseModel as BaseModelV1
+
+tests\test_agent_backend.py:35
+  g:\svn\trunk_cn\dragon\game\.agent_os\tests\test_agent_backend.py:35: PytestCollectionWarning: cannot collect test class 'TestResult' because it has a __init__ constructor (from: tests/test_agent_backend.py)
+    class TestResult:
+
+tests/test_spawn_children.py::TestSpawnViaAPI::test_spawn_api_generative
+  C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+tests/test_sdk_backend.py::test_sdk_stream
+tests/test_sdk_backend.py::test_real_sdk_call
+  C:\Users\tweijieliu\AppData\Local\Programs\Python\Python314\Lib\asyncio\base_events.py:744: RuntimeWarning: coroutine method 'aclose' of 'query' was never awaited
+    self._ready.clear()
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+83 passed, 23 skipped, 5 warnings in 9.37s

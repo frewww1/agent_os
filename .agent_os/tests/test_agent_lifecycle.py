@@ -29,7 +29,7 @@ if "agent_os" not in sys.modules:
 
 # 导入模块（在包注入之后）— 修正路径：模块在 src/core/ 下
 from agent_os.src.core.models import RunStatus, RunInfo, SpawnRequest
-from agent_os.src.core.dag_planner import topo_order, ready_steps
+from agent_os.src.core.dag.planner import topo_order, ready_steps
 
 # 在导入 process_manager 之前，先确保子模块可用
 sys.path.insert(0, AGENT_OS_DIR)
@@ -78,7 +78,7 @@ class TestAgentTypeLifecycle:
         pm._bus = MagicMock()
         pm._loop = None  # no event loop in test environment
         pm._agents = {}
-        pm._stream_reader = MagicMock()
+        pm._start_reader = MagicMock()
         pm._backend = MagicMock()
         return pm
 
@@ -275,7 +275,7 @@ class TestAgentTypeLifecycle:
 
     def test_root_system_prompt_contains_mcp_tools(self, pm):
         """根 agent system prompt 包含 MCP 工具列表。"""
-        from agent_os.src.core.prompt_builder import PromptBuilder
+        from agent_os.src.core.session.prompt import PromptBuilder
         prompt = PromptBuilder.build_root_system_prompt()
         assert "Task tool" in prompt
         assert "report.py" in prompt
@@ -285,7 +285,7 @@ class TestAgentTypeLifecycle:
 
     def test_subagent_system_prompt_contains_mcp_tools(self, pm):
         """子 agent system prompt 包含 MCP 工具和 Task。"""
-        from agent_os.src.core.prompt_builder import PromptBuilder
+        from agent_os.src.core.session.prompt import PromptBuilder
         prompt = PromptBuilder.build_subagent_system_prompt(
             task_type="generative",
             task_prompt="do something",
@@ -300,7 +300,7 @@ class TestAgentTypeLifecycle:
 
     def test_subagent_prompt_differentiates_types(self, pm):
         """generative 和 interactive 的子 agent prompt 有不同的完成指导。"""
-        from agent_os.src.core.prompt_builder import PromptBuilder
+        from agent_os.src.core.session.prompt import PromptBuilder
         gen = PromptBuilder.build_subagent_system_prompt("generative", "task A")
         inter = PromptBuilder.build_subagent_system_prompt("interactive", "task B")
         # generative 要求 report.py
@@ -383,7 +383,7 @@ class TestTaskTypeResolution:
         pm.recorder._git_cwd = MagicMock(return_value=AGENT_OS_DIR)
         pm._mark_dirty = MagicMock()
         pm._agents = {}
-        pm._stream_reader = MagicMock()
+        pm._start_reader = MagicMock()
         pm._backend = MagicMock()
         return pm
 

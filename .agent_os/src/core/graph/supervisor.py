@@ -14,7 +14,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import interrupt, Command
 
-from .prompt_builder import PromptBuilder
+from ..session.prompt import PromptBuilder
 
 import logging
 

@@ -7,7 +7,6 @@ import json as _json
 import logging
 from typing import Any, Callable
 
-from .models import RunInfo
 from ..utils import sanitize
 
 logger = logging.getLogger("agent_os")
@@ -118,36 +117,6 @@ def _handle_exit_plan_mode(block: dict, inp: dict) -> dict:
 # ============================================================================
 # 公共 API
 # ============================================================================
-
-def extract_session_id(run_info: RunInfo, line: str) -> None:
-    """从 stream-json 中对账 session_id 并提取 result（fallback）。
-
-    OS 已通过 --session-id 主动指定 session_id，此处仅做对账验证。
-    """
-    try:
-        obj = _json.loads(line)
-    except (ValueError, TypeError):
-        logger.debug(f"[{run_info.run_id[:8]}] Not JSON: {line[:80]}")
-        return
-
-    # 对账 session_id
-    sid = obj.get("session_id")
-    if sid and run_info.session_id and sid != run_info.session_id:
-        logger.warning(
-            f"[{run_info.run_id[:8]}] session_id mismatch: "
-            f"preset={run_info.session_id[:13]}, cli_reported={sid[:13]}"
-        )
-        run_info.session_id = sid
-
-    # 从 result 事件中提取最终回答（作为 fallback）
-    if obj.get("type") == "result":
-        result_text = obj.get("result", "")
-        if result_text and not run_info.reported_result:
-            run_info._fallback_result = (
-                result_text.encode("utf-8", errors="replace")
-                .decode("utf-8", errors="replace")
-            )
-
 
 def parse_stream_json_events(line: str) -> list[dict]:
     """解析 stream-json 一行，返回结构化事件列表。

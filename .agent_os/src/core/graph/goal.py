@@ -8,7 +8,7 @@
 """
 import os
 import sqlite3
-from typing import TypedDict, Optional
+from typing import TypedDict
 
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.sqlite import SqliteSaver

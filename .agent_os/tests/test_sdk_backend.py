@@ -9,7 +9,7 @@ import time
 # 把 src 加入 path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from agent_os.src.agent.backend import CodeBuddySDKBackend, SessionHandle, _QueueLineReader
+from agent_os.src.agent import CodeBuddySDKBackend, SDKHandle
 
 
 def test_sdk_stream():
@@ -32,36 +32,6 @@ def test_sdk_stream():
     print(f"  Texts: {texts}")
     assert any("hello" in t.lower() for t in texts), f"No 'hello' in {texts}"
     print("[PASS] SDK stream() test")
-
-
-def test_queue_reader():
-    """测试 QueueLineReader。"""
-    q = queue.Queue()
-    stop = threading.Event()
-    reader = _QueueLineReader(q, stop)
-
-    # 模拟写入
-    def writer():
-        q.put('line1\n')
-        q.put('line2\n')
-        time.sleep(0.1)
-        stop.set()
-        q.put(None)
-
-    t = threading.Thread(target=writer)
-    t.start()
-
-    lines = []
-    for line in iter(reader.readline, ""):
-        stripped = line.strip()
-        if stripped:
-            lines.append(stripped)
-    t.join()
-
-    assert len(lines) == 2
-    assert lines[0] == "line1"
-    assert lines[1] == "line2"
-    print("[PASS] QueueLineReader")
 
 
 def test_real_sdk_call():
@@ -106,8 +76,6 @@ def test_real_sdk_call():
 
 
 if __name__ == "__main__":
-    test_queue_reader()
-
     import sys
     if "--real" in sys.argv:
         test_real_sdk_call()

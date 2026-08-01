@@ -1,8 +1,6 @@
 """环境变量构建 + Task Hook 配置生成 — 纯函数，零 AgentOS 依赖。"""
-import json as _json
 import logging
 import os
-import sys
 
 from ..utils import sanitize_workspace_name
 
@@ -40,39 +38,3 @@ def build_agent_env(run_id: str, project_root: str, port: int,
                 env[k] = v
 
     return env
-
-
-def generate_task_hook_config(state_dir: str) -> str | None:
-    """生成 Task Hook 的 JSON 配置文件，拦截 CodeBuddy 原生 Task 工具转发到 OS spawn。"""
-    config_dir = os.path.join(state_dir, "hooks")
-    config_file = os.path.join(config_dir, "task_hook_config.json")
-    os.makedirs(config_dir, exist_ok=True)
-
-    # hook 脚本路径：src/hooks/task_hook.py
-    hook_script = os.path.abspath(os.path.join(
-        os.path.dirname(os.path.dirname(__file__)),
-        "hooks", "task_hook.py"
-    ))
-
-    # Python 解释器
-    python_exe = os.path.abspath(os.path.join(
-        os.path.dirname(os.path.dirname(__file__)),
-        "..", ".venv", "Scripts", "python.exe"
-    ))
-    if not os.path.exists(python_exe):
-        python_exe = sys.executable
-
-    config = {
-        "hooks": {
-            "PreToolUse": [{
-                "matcher": "Task",
-                "hooks": [{
-                    "type": "command",
-                    "command": f"{python_exe} {hook_script}",
-                }]
-            }]
-        }
-    }
-    with open(config_file, "w", encoding="utf-8") as f:
-        _json.dump(config, f, indent=2)
-    return config_file

@@ -25,12 +25,25 @@ class EventBus:
     publish 可在任意线程调用（reader 线程 / HTTP handler / timeout watcher）。
     handler 若为协程函数，调度到 event loop 执行；普通函数在当前线程同步执行
     （handler 自行保证线程安全或保持轻量）。
+
+    单例：进程内唯一实例，通过 EventBus.instance() 获取。
+    AgentOS 创建时初始化（带 loop），RunInfo 等无需注入即可 publish。
     """
+
+    _instance: "EventBus | None" = None
 
     def __init__(self, loop: asyncio.AbstractEventLoop | None = None):
         self._loop = loop
         self._subs: dict[str, list[Callable]] = {}
         self._lock = threading.Lock()
+        EventBus._instance = self
+
+    @classmethod
+    def instance(cls) -> "EventBus":
+        """获取全局单例。未初始化时惰性创建（无 loop，仅同步 handler）。"""
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
 
     def subscribe(self, topic: str, handler: Callable) -> None:
         """订阅 topic。handler 签名 (payload: dict) -> None。"""

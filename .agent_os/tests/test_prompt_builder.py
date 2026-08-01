@@ -1,6 +1,6 @@
 """PromptBuilder 单元测试 — 可单独运行：pytest tests/test_prompt_builder.py"""
 import pytest
-from agent_os.src.core.prompt_builder import PromptBuilder
+from agent_os.src.core.session.prompt import PromptBuilder
 from agent_os.src.core.models import RunInfo
 
 

@@ -5,7 +5,7 @@
 """
 import os
 
-from .models import RunInfo
+from ..models import RunInfo
 
 
 class PromptBuilder:

@@ -3,7 +3,7 @@ import pytest
 import tempfile
 from unittest.mock import MagicMock
 
-from agent_os.src.core.goal_graph import GoalGraph, GoalState
+from agent_os.src.core.graph.goal import GoalGraph, GoalState
 from agent_os.src.core.models import RunInfo, RunStatus
 
 
@@ -14,12 +14,15 @@ class TestGoalGraph:
         """创建 mock AgentOS。"""
         pm = MagicMock()
         pm._state_dir = tempfile.gettempdir()
-        pm._evaluate_goal = MagicMock(return_value=eval_result)
         pm._mark_dirty = MagicMock()
         pm.continue_run = MagicMock()
-        # runs.get 返回一个 RunInfo
         ri = RunInfo(run_id="r1", prompt="test", session_id="s1", status=RunStatus.COMPLETED)
         pm.runs = {"r1": ri}
+        # _get_agent 返回 mock agent，_evaluate_goal 在 agent 上
+        agent = MagicMock()
+        agent._evaluate_goal = MagicMock(return_value=eval_result)
+        pm._get_agent = MagicMock(return_value=agent)
+        pm._mock_agent = agent  # 供测试断言
         return pm
 
     def test_graph_creation(self):
@@ -34,7 +37,7 @@ class TestGoalGraph:
         gg = GoalGraph(pm)
         finished = gg.run("r1", "do something", max_retries=3)
         assert finished is True
-        pm._evaluate_goal.assert_called_once()
+        pm._mock_agent._evaluate_goal.assert_called_once()
         pm.continue_run.assert_not_called()  # 达成，不需要反馈重做
 
     def test_run_goal_not_met_triggers_feedback(self):
@@ -44,7 +47,7 @@ class TestGoalGraph:
         finished = gg.run("r1", "do something", max_retries=3)
         # interrupt 暂停 → run 返回 False（未完成）
         assert finished is False
-        pm._evaluate_goal.assert_called_once()
+        pm._mock_agent._evaluate_goal.assert_called_once()
         pm.continue_run.assert_called_once()  # 触发了反馈
 
     def test_run_goal_max_retries_exhausted(self):
@@ -54,7 +57,7 @@ class TestGoalGraph:
         # max_retries=0 → 首次评估后即超限
         finished = gg.run("r1", "do something", max_retries=0)
         assert finished is True
-        pm._evaluate_goal.assert_called_once()
+        pm._mock_agent._evaluate_goal.assert_called_once()
         pm.continue_run.assert_not_called()  # 超限不反馈
 
     def test_evaluate_node_uses_pm_evaluate_goal(self):
@@ -65,7 +68,7 @@ class TestGoalGraph:
         result = gg._evaluate(state)
         assert result["is_met"] is True
         assert "met" in result["eval_reason"]
-        pm._evaluate_goal.assert_called_once()
+        pm._mock_agent._evaluate_goal.assert_called_once()
 
     def test_feedback_node_calls_continue_run(self):
         """feedback 节点调 continue_run + interrupt。"""
