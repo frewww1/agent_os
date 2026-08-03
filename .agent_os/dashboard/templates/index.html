@@ -209,7 +209,7 @@
 <div id="modalLayer"></div>
 
 <script>
-let currentRunId = null;
+let currentAgentId = null;
 let eventSource = null;
 let renderedSeq = 0;
 let autoScroll = true;
@@ -273,7 +273,7 @@ function showPlaceholder(show) {
 }
 
 function newChat() {
-    currentRunId = null;
+    currentAgentId = null;
     renderedSeq = 0;
     unreadEvents = 0;
     document.getElementById('convStream').innerHTML = '';
@@ -362,9 +362,9 @@ async function onDagExistingWsChange() {
         return;
     }
     wsInput.value = wsName;  // 任务名 = workspace 名
-    // 加载 dag 状态预览（用 /api/run/{any}/dag?workspace_id=xxx）
+    // 加载 dag 状态预览（用 /api/agent/{any}/dag?workspace_id=xxx）
     try {
-        const resp = await fetch(`/api/run/dummy/dag?workspace_id=${encodeURIComponent(wsName)}`);
+        const resp = await fetch(`/api/agent/dummy/dag?workspace_id=${encodeURIComponent(wsName)}`);
         const data = await resp.json();
         if (data.steps && data.steps.length > 0) {
             preview.style.display = '';
@@ -432,14 +432,14 @@ async function runDagTemplate() {
     const data = await resp.json();
     if (data.error) { alert(data.error); return; }
 
-    currentRunId = data.run_id;
+    currentAgentId = data.agent_id;
     renderedSeq = 0;
     document.getElementById("convStream").innerHTML = "";
     showPlaceholder(false);
     const titlePrefix = isResume ? "🔄 继续: " : "🚀 ";
     const tpl = isResume ? {name: ws} : DAG_TEMPLATES.find(t => t.id === tid);
     document.getElementById("convTitle").textContent = titlePrefix + (tpl ? tpl.name : ws);
-    connectStream(data.run_id);
+    connectStream(data.agent_id);
     setStatus("running", "Running…");
     document.getElementById("stopBtn").style.display = "";
     document.getElementById("dagQuickstart").style.display = "none";
@@ -460,7 +460,7 @@ async function send() {
     btn.textContent = 'Sending...';
 
     try {
-        if (currentRunId) {
+        if (currentAgentId) {
             await continueChat(prompt);
         } else {
             await startNew(prompt);
@@ -499,12 +499,12 @@ async function startNew(prompt) {
     });
     const data = await resp.json();
     if (data.error) { alert(data.error); return; }
-    currentRunId = data.run_id;
+    currentAgentId = data.agent_id;
     renderedSeq = 0;
     document.getElementById('convStream').innerHTML = '';
     showPlaceholder(false);
     document.getElementById('convTitle').textContent = prompt.length > 80 ? prompt.slice(0, 80) + '…' : prompt;
-    connectStream(data.run_id);
+    connectStream(data.agent_id);
     setStatus('running', 'Running…');
     document.getElementById('stopBtn').style.display = '';
     refreshTree();
@@ -513,23 +513,23 @@ async function startNew(prompt) {
 async function continueChat(prompt) {
     const model = document.getElementById('modelSelect').value || null;
     const goal = getGoal();
-    const resp = await fetch(`/api/run/${currentRunId}/continue`, {
+    const resp = await fetch(`/api/agent/${currentAgentId}/continue`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({prompt, model, goal})
     });
     const data = await resp.json();
     if (data.error) { alert(data.error); return; }
-    connectStream(currentRunId);
+    connectStream(currentAgentId);
     setStatus('running', 'Running…');
     document.getElementById('stopBtn').style.display = '';
 }
 
-function connectStream(runId) {
+function connectStream(agentId) {
     if (eventSource) { eventSource.close(); }
-    eventSource = new EventSource(`/api/run/${runId}/stream`);
+    eventSource = new EventSource(`/api/agent/${agentId}/stream`);
     eventSource.onmessage = (e) => {
-        if (currentRunId !== runId) return;  // 已切换到其他 agent，丢弃
+        if (currentAgentId !== agentId) return;  // 已切换到其他 agent，丢弃
         let ev;
         try { ev = JSON.parse(e.data); }
         catch { ev = { kind: 'raw', text: e.data }; }
@@ -544,7 +544,7 @@ function connectStream(runId) {
         document.getElementById('stopBtn').style.display = 'none';
         refreshTree();
         updateSessionInfo();
-        if (currentRunId) { refreshWorkspace(currentRunId); refreshDag(currentRunId); }
+        if (currentAgentId) { refreshWorkspace(currentAgentId); refreshDag(currentAgentId); }
     });
     eventSource.onerror = () => {
         if (eventSource) { eventSource.close(); eventSource = null; }
@@ -554,27 +554,27 @@ function connectStream(runId) {
 }
 
 async function stopCurrent() {
-    if (!currentRunId) return;
-    await fetch(`/api/run/${currentRunId}/stop`, {method: 'POST'});
+    if (!currentAgentId) return;
+    await fetch(`/api/agent/${currentAgentId}/stop`, {method: 'POST'});
 }
 
-async function viewRun(runId) {
-    console.log('[viewRun] called with', runId, 'prev currentRunId=', currentRunId);
-    currentRunId = runId;
+async function viewAgent(agentId) {
+    console.log('[viewAgent] called with', agentId, 'prev currentAgentId=', currentAgentId);
+    currentAgentId = agentId;
     if (eventSource) { eventSource.close(); eventSource = null; }
     // 先重置 renderedSeq，防止切换前的旧 stream 回调污染新 run 的序号
     renderedSeq = 0;
-    const resp = await fetch(`/api/run/${runId}`);
+    const resp = await fetch(`/api/agent/${agentId}`);
     if (resp.status === 404) { newChat(); refreshTree(); return; }
     // 如果 fetch 期间用户又切走了，放弃渲染
-    if (currentRunId !== runId) return;
+    if (currentAgentId !== agentId) return;
     const data = await resp.json();
     document.getElementById('convStream').innerHTML = '';
     showPlaceholder(false);
     renderedSeq = 0;
 
     const title = (data.prompt || '').replace(/\[Agent OS Communication Protocol[^\]]*\]/g,'').replace(/\[\/?Your Task\]/g,'').trim();
-    document.getElementById('convTitle').textContent = title.length > 80 ? title.slice(0, 80) + '…' : (title || data.run_id);
+    document.getElementById('convTitle').textContent = title.length > 80 ? title.slice(0, 80) + '…' : (title || data.agent_id);
     updateConvSubtitle(data);
 
     const events = data.events || [];
@@ -586,21 +586,21 @@ async function viewRun(runId) {
     unreadEvents = 0;
     scrollToBottom();
     if (data.status === 'running') {
-        connectStream(runId);
+        connectStream(agentId);
         setStatus('running', STATUS_LABEL.running);
         document.getElementById('stopBtn').style.display = '';
     } else if (data.status === 'plan_pending') {
         setStatus('plan_pending', STATUS_LABEL.plan_pending);
         document.getElementById('stopBtn').style.display = 'none';
-        showPlanApproval(runId, data.plan_content, data.plan_file);
+        showPlanApproval(agentId, data.plan_content, data.plan_file);
     } else {
         setStatus(data.status, STATUS_LABEL[data.status] || data.status);
         document.getElementById('stopBtn').style.display = 'none';
     }
     updateSessionInfo();
     refreshTree();
-    refreshWorkspace(runId);
-    refreshDag(runId);
+    refreshWorkspace(agentId);
+    refreshDag(agentId);
     // 切换会话后自动聚焦输入框
     document.getElementById('promptInput').focus();
 }
@@ -612,7 +612,7 @@ function updateConvSubtitle(data) {
     if (data.model) bits.push(data.model);
     if (data.session_id) bits.push(`session ${data.session_id.slice(0,8)}`);
     if (data.turns > 1) bits.push(`${data.turns} turns`);
-    if (data.children_run_ids && data.children_run_ids.length > 0) bits.push(`${data.children_run_ids.length} children`);
+    if (data.children_ids && data.children_ids.length > 0) bits.push(`${data.children_ids.length} children`);
     if (data.task_type === 'interactive') bits.push('interactive');
     if (data.user_terminated) bits.push('ended by user');
     sub.textContent = bits.join(' · ');
@@ -754,11 +754,11 @@ function renderPrompt(ev) {
 }
 
 async function rewindToSeq(seq, promptText) {
-    if (!currentRunId) return;
+    if (!currentAgentId) return;
     const preview = (promptText || '').slice(0, 60);
     if (!confirm(`回退会话到这条消息之前？\n\n「${preview}${promptText.length > 60 ? '...' : ''}」\n\n⚠️ 这条消息及之后的所有对话会被删除\n⚠️ 对应的 git commit 也会被撤销\n\n此操作不可撤销。`)) return;
     try {
-        const resp = await fetch(`/api/run/${currentRunId}/rewind`, {
+        const resp = await fetch(`/api/agent/${currentAgentId}/rewind`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({seq}),
@@ -769,9 +769,9 @@ async function rewindToSeq(seq, promptText) {
             return;
         }
         // 重新拉一次 run 状态并重连 stream（事件流已被截断）
-        viewRun(currentRunId);
-        refreshWorkspace(currentRunId);
-        refreshDag(currentRunId);
+        viewAgent(currentAgentId);
+        refreshWorkspace(currentAgentId);
+        refreshDag(currentAgentId);
     } catch (e) {
         alert(`回退失败：${e}`);
     }
@@ -1173,17 +1173,17 @@ function renderPlanPending(ev) {
         wrap.appendChild(sub);
     }
     // 触发审批面板（如果是实时 SSE）
-    // 优先用事件里的 run_id，兜底用 currentRunId
-    const runId = ev.run_id || currentRunId;
+    // 优先用事件里的 run_id，兜底用 currentAgentId
+    const agentId = ev.agent_id || currentAgentId;
     setTimeout(() => {
-        if (runId) {
-            fetch(`/api/run/${runId}`)
+        if (agentId) {
+            fetch(`/api/agent/${agentId}`)
                 .then(r => r.json())
                 .then(d => {
                     if (d.status === 'plan_pending') {
                         setStatus('plan_pending', STATUS_LABEL.plan_pending);
                         document.getElementById('stopBtn').style.display = 'none';
-                        showPlanApproval(runId, d.plan_content, d.plan_file);
+                        showPlanApproval(agentId, d.plan_content, d.plan_file);
                     }
                 }).catch(() => {});
         }
@@ -1191,7 +1191,7 @@ function renderPlanPending(ev) {
     return wrap;
 }
 
-function showPlanApproval(runId, planContent, planFile) {
+function showPlanApproval(agentId, planContent, planFile) {
     document.querySelectorAll('.plan-approval-panel').forEach(e => e.remove());
 
     const panel = document.createElement('div');
@@ -1234,7 +1234,7 @@ function showPlanApproval(runId, planContent, planFile) {
         if (e.key === 'Enter') {
             e.preventDefault();
             e.stopPropagation();
-            if (!feedbackInput.disabled) approvePlan(runId, feedbackInput.value);
+            if (!feedbackInput.disabled) approvePlan(agentId, feedbackInput.value);
         }
     });
     footer.appendChild(feedbackInput);
@@ -1244,12 +1244,12 @@ function showPlanApproval(runId, planContent, planFile) {
     const approveBtn = document.createElement('button');
     approveBtn.className = 'btn-approve';
     approveBtn.textContent = 'Approve';
-    approveBtn.onclick = () => approvePlan(runId, feedbackInput.value);
+    approveBtn.onclick = () => approvePlan(agentId, feedbackInput.value);
 
     const rejectBtn = document.createElement('button');
     rejectBtn.className = 'btn-reject';
     rejectBtn.textContent = 'Reject';
-    rejectBtn.onclick = () => rejectPlan(runId, feedbackInput.value);
+    rejectBtn.onclick = () => rejectPlan(agentId, feedbackInput.value);
 
     btns.appendChild(approveBtn);
     btns.appendChild(rejectBtn);
@@ -1281,14 +1281,14 @@ window.addEventListener('resize', () => {
     if (panel && panel.style.position === 'fixed') _positionPlanPanel(panel);
 });
 
-async function approvePlan(runId, feedback) {
+async function approvePlan(agentId, feedback) {
     const panel = document.querySelector('.plan-approval-panel');
     if (panel) {
         // 禁用所有按钮防止重复点击
         panel.querySelectorAll('button').forEach(b => b.disabled = true);
         panel.querySelector('.plan-approval-feedback').disabled = true;
     }
-    const resp = await fetch(`/api/run/${runId}/plan/approve`, {
+    const resp = await fetch(`/api/agent/${agentId}/plan/approve`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ feedback: feedback || '' }),
@@ -1298,19 +1298,19 @@ async function approvePlan(runId, feedback) {
     if (data.ok) {
         setStatus('running', STATUS_LABEL.running);
         document.getElementById('stopBtn').style.display = '';
-        connectStream(runId);
+        connectStream(agentId);
     } else {
         alert('Approve failed: ' + (data.error || 'unknown'));
     }
 }
 
-async function rejectPlan(runId, feedback) {
+async function rejectPlan(agentId, feedback) {
     const panel = document.querySelector('.plan-approval-panel');
     if (panel) {
         panel.querySelectorAll('button').forEach(b => b.disabled = true);
         panel.querySelector('.plan-approval-feedback').disabled = true;
     }
-    const resp = await fetch(`/api/run/${runId}/plan/reject`, {
+    const resp = await fetch(`/api/agent/${agentId}/plan/reject`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ feedback: feedback || '' }),
@@ -1320,7 +1320,7 @@ async function rejectPlan(runId, feedback) {
     if (data.ok) {
         setStatus('running', STATUS_LABEL.running);
         document.getElementById('stopBtn').style.display = '';
-        connectStream(runId);
+        connectStream(agentId);
     } else {
         alert('Reject failed: ' + (data.error || 'unknown'));
     }
@@ -1339,15 +1339,15 @@ function setStatus(type, text) {
 }
 
 async function updateSessionInfo() {
-    if (!currentRunId) return;
-    const resp = await fetch(`/api/run/${currentRunId}`);
+    if (!currentAgentId) return;
+    const resp = await fetch(`/api/agent/${currentAgentId}`);
     const data = await resp.json();
     const info = document.getElementById('sessionInfo');
     const meta = document.getElementById('convMeta');
     const parts = [];
     if (data.session_id) parts.push(`session ${data.session_id.slice(0,8)}`);
     if (data.turns > 1) parts.push(`${data.turns} turns`);
-    if (data.children_run_ids && data.children_run_ids.length > 0) parts.push(`${data.children_run_ids.length} children`);
+    if (data.children_ids && data.children_ids.length > 0) parts.push(`${data.children_ids.length} children`);
     info.textContent = parts.join(' · ');
     meta.textContent = parts.join(' · ');
     // Goal picker
@@ -1382,8 +1382,8 @@ async function onGoalToggle() {
     goalRow.style.display = show ? '' : 'none';
     if (show) {
         input.focus();
-    } else if (currentRunId) {
-        await fetch('/api/run/' + currentRunId + '/set-goal', {
+    } else if (currentAgentId) {
+        await fetch('/api/agent/' + currentAgentId + '/set-goal', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({goal: ''})
         });
@@ -1394,9 +1394,9 @@ async function onGoalBlur() {
     if (_goalUpdating) return;
     const input = document.getElementById('goalInput');
     const goal = input.value.trim();
-    if (!currentRunId) return;
+    if (!currentAgentId) return;
     const maxRetries = parseInt(document.getElementById('goalRetries').value) || 5;
-    await fetch('/api/run/' + currentRunId + '/set-goal', {
+    await fetch('/api/agent/' + currentAgentId + '/set-goal', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({goal, max_retries: maxRetries})
     });
@@ -1414,9 +1414,9 @@ function onSupervisorBlur() {
 }
 
 async function onGoalRetriesChange() {
-    if (_goalUpdating || !currentRunId) return;
+    if (_goalUpdating || !currentAgentId) return;
     const maxRetries = parseInt(document.getElementById('goalRetries').value) || 5;
-    await fetch('/api/run/' + currentRunId + '/set-max-goal-retries', {
+    await fetch('/api/agent/' + currentAgentId + '/set-max-goal-retries', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({max_retries: maxRetries})
     });
@@ -1475,15 +1475,15 @@ function renderWorkspaceGroups(roots) {
     for (const [wsName, rs] of groups) {
         const total = rs.reduce((n, r) => n + _countTreeNodes(r), 0);
         const isReal = wsName !== '__no_ws__';
-        // 取第一个 root 的 run_id，用于点击 workspace 组时查看 DAG
-        const firstRunId = rs[0] ? rs[0].run_id : '';
+        // 取第一个 root 的 agent_id，用于点击 workspace 组时查看 DAG
+        const firstAgentId = rs[0] ? rs[0].agent_id : '';
         const label = isReal ? `📁 ${escapeHtml(wsName)}` : '(无 workspace)';
         const cls = 'ws-group-header';
         const delBtn = isReal
             ? `<button class="ws-group-del" title="删除整个 workspace（含所有 run + 磁盘文件）" onclick="event.stopPropagation(); deleteWorkspace('${wsName}')">🗑</button>`
             : '';
-        const clickHandler = isReal && firstRunId
-            ? `onclick="viewRun('${firstRunId}')" style="cursor:pointer"`
+        const clickHandler = isReal && firstAgentId
+            ? `onclick="viewAgent('${firstAgentId}')" style="cursor:pointer"`
             : '';
         html += `<div class="ws-group">
             <div class="${cls}" ${clickHandler} title="点击查看 DAG 编排状态">
@@ -1512,10 +1512,10 @@ async function deleteWorkspace(wsName) {
         }
         showToast(`已删除 workspace ${wsName.slice(0,8)}（${data.deleted_runs} runs · ${data.purged_dirs} 目录）`, 'success');
         // 当前看的 run 可能被删了，回到空白
-        if (currentRunId) {
+        if (currentAgentId) {
             // 查 run 是否还在
-            const r = await fetch('/api/runs').then(r => r.json()).catch(() => ({runs: []}));
-            const stillThere = (r.runs || []).some(x => x.run_id === currentRunId);
+            const r = await fetch('/api/agents').then(r => r.json()).catch(() => ({runs: []}));
+            const stillThere = (r.agents || []).some(x => x.agent_id === currentAgentId);
             if (!stillThere) newChat();
         }
         refreshTree();
@@ -1524,22 +1524,22 @@ async function deleteWorkspace(wsName) {
     }
 }
 
-// 折叠状态：node.run_id → bool（true = 折叠子节点）
+// 折叠状态：node.agent_id → bool（true = 折叠子节点）
 const collapsedNodes = new Set();
 
-function toggleCollapse(runId, ev) {
+function toggleCollapse(agentId, ev) {
     if (ev) ev.stopPropagation();
-    if (collapsedNodes.has(runId)) collapsedNodes.delete(runId);
-    else collapsedNodes.add(runId);
+    if (collapsedNodes.has(agentId)) collapsedNodes.delete(agentId);
+    else collapsedNodes.add(agentId);
     refreshTree();
 }
 
 function renderTree(nodes, depth) {
     if (!nodes || nodes.length === 0) return '<div class="tree-empty">No agents yet</div>';
     return nodes.map(node => {
-        const isActive = node.run_id === currentRunId;
+        const isActive = node.agent_id === currentAgentId;
         const hasChildren = node.children && node.children.length > 0;
-        const isCollapsed = collapsedNodes.has(node.run_id);
+        const isCollapsed = collapsedNodes.has(node.agent_id);
         const statusIcon = {
             running: '<span class="ti running"></span>',
             completed: '<span class="ti completed"></span>',
@@ -1550,7 +1550,7 @@ function renderTree(nodes, depth) {
         }[node.status] || '<span class="ti"></span>';
 
         // 优先用用户自定义 label，否则直接用后端已提取的 prompt
-        const showPrompt = node.label || node.prompt || node.run_id.slice(0, 8);
+        const showPrompt = node.label || node.prompt || node.agent_id.slice(0, 8);
 
         const modelBadge = node.model ? `<span class="tree-badge tree-badge-model">${escapeHtml(node.model)}</span>` : '';
         const typeBadge = (node.task_type === 'interactive')
@@ -1562,10 +1562,10 @@ function renderTree(nodes, depth) {
         const canStop = node.status === 'running' && node.is_root;
 
         const collapseBtn = hasChildren
-            ? `<button class="tree-toggle" onclick="toggleCollapse('${node.run_id}', event)" title="${isCollapsed ? 'Expand' : 'Collapse'}">${isCollapsed ? '▸' : '▾'}</button>`
+            ? `<button class="tree-toggle" onclick="toggleCollapse('${node.agent_id}', event)" title="${isCollapsed ? 'Expand' : 'Collapse'}">${isCollapsed ? '▸' : '▾'}</button>`
             : '<span class="tree-toggle-spacer"></span>';
 
-        let html = `<div class="tree-node depth-${depth} ${isActive ? 'active' : ''} ${node.status}" data-run-id="${node.run_id}" onclick="viewRun('${node.run_id}')">`;
+        let html = `<div class="tree-node depth-${depth} ${isActive ? 'active' : ''} ${node.status}" data-agent-id="${node.agent_id}" onclick="viewAgent('${node.agent_id}')">`;
         html += `<div class="tree-node-row">`;
         html += collapseBtn;
         html += statusIcon;
@@ -1584,17 +1584,17 @@ function renderTree(nodes, depth) {
         }
         // hover 操作按钮组
         html += `<span class="tree-actions">`;
-        html += `<button class="tree-btn-icon tree-btn-rename" title="重命名" onclick="event.stopPropagation();renameRun('${node.run_id}')">✎</button>`;
+        html += `<button class="tree-btn-icon tree-btn-rename" title="重命名" onclick="event.stopPropagation();renameAgent('${node.agent_id}')">✎</button>`;
         if (canDone) {
-            html += `<button class="tree-btn-done" onclick="event.stopPropagation();completeAgent('${node.run_id}', '${escapeHtml(doneLabel)}', '${node.task_type || 'generative'}')">${escapeHtml(doneLabel)}</button>`;
+            html += `<button class="tree-btn-done" onclick="event.stopPropagation();completeAgent('${node.agent_id}', '${escapeHtml(doneLabel)}', '${node.task_type || 'generative'}')">${escapeHtml(doneLabel)}</button>`;
         }
         if (canStop) {
-            html += `<button class="tree-btn-icon tree-btn-stop" title="Stop" onclick="event.stopPropagation();stopRun('${node.run_id}')">■</button>`;
+            html += `<button class="tree-btn-icon tree-btn-stop" title="Stop" onclick="event.stopPropagation();stopRun('${node.agent_id}')">■</button>`;
         }
         if (node.status === 'plan_pending') {
-            html += `<button class="tree-btn-done" style="background:#22c55e" onclick="event.stopPropagation();viewRun('${node.run_id}')">Review Plan</button>`;
+            html += `<button class="tree-btn-done" style="background:#22c55e" onclick="event.stopPropagation();viewAgent('${node.agent_id}')">Review Plan</button>`;
         }
-        html += `<button class="tree-btn-icon tree-btn-del" title="Delete" onclick="event.stopPropagation();deleteRun('${node.run_id}')">✕</button>`;
+        html += `<button class="tree-btn-icon tree-btn-del" title="Delete" onclick="event.stopPropagation();deleteRun('${node.agent_id}')">✕</button>`;
         html += `</span>`;
         html += `</div>`;
         const goalBadge = node.goal ? `<span class="tree-badge tree-badge-goal" title="Goal: ${escapeHtml(node.goal)}">goal</span>` : '';
@@ -1615,52 +1615,52 @@ function renderTree(nodes, depth) {
     }).join('');
 }
 
-async function stopRun(runId) {
-    await fetch(`/api/run/${runId}/stop`, {method: 'POST'});
+async function stopRun(agentId) {
+    await fetch(`/api/agent/${agentId}/stop`, {method: 'POST'});
     refreshTree();
 }
 
-async function deleteRun(runId) {
-    const isCurrent = runId === currentRunId;
+async function deleteRun(agentId) {
+    const isCurrent = agentId === currentAgentId;
     if (!confirm('Delete this agent (and all descendants)?')) return;
-    const resp = await fetch(`/api/run/${runId}`, {method: 'DELETE'});
+    const resp = await fetch(`/api/agent/${agentId}`, {method: 'DELETE'});
     if (!resp.ok) { alert('Delete failed'); return; }
     if (isCurrent) newChat();
     refreshTree();
 }
 
 async function clearCompleted() {
-    if (!currentRunId) {
+    if (!currentAgentId) {
         // 没有选中 run，走原来的"清除所有已完成"逻辑
         if (!confirm('Clear all completed/failed/stopped runs?')) return;
-        const resp = await fetch('/api/runs/clear', {method: 'POST'});
+        const resp = await fetch('/api/agents/clear', {method: 'POST'});
         const data = await resp.json();
         refreshTree();
         return;
     }
     // 有选中 run，清除当前 run 的上下文（类似 Claude Code /clear）
-    if (!confirm(`Clear context for run ${currentRunId.slice(0,8)}? This will erase conversation history but keep the run.`)) return;
-    const resp = await fetch(`/api/run/${currentRunId}/clear`, {method: 'POST'});
+    if (!confirm(`Clear context for run ${currentAgentId.slice(0,8)}? This will erase conversation history but keep the run.`)) return;
+    const resp = await fetch(`/api/agent/${currentAgentId}/clear`, {method: 'POST'});
     const data = await resp.json();
     if (data.ok) {
         // 重新加载该 run 的事件流
-        loadRunDetail(currentRunId);
+        loadRunDetail(currentAgentId);
     } else {
         alert(data.error || 'Clear failed');
     }
 }
 
 function exportRun(fmt) {
-    if (!currentRunId) { alert('No run selected'); return; }
-    window.open(`/api/run/${currentRunId}/export?format=${fmt}`, '_blank');
+    if (!currentAgentId) { alert('No run selected'); return; }
+    window.open(`/api/agent/${currentAgentId}/export?format=${fmt}`, '_blank');
 }
 
-async function completeAgent(runId, label, taskType) {
+async function completeAgent(agentId, label, taskType) {
     const msg = taskType === 'interactive'
         ? 'Mark this interactive agent as completed? Parent will resume.'
         : 'Force end this agent? The child process will be terminated and the parent will resume.';
     if (!confirm(msg)) return;
-    const resp = await fetch(`/api/run/${runId}/complete`, {method: 'POST'});
+    const resp = await fetch(`/api/agent/${agentId}/complete`, {method: 'POST'});
     const data = await resp.json();
     if (data.ok) { refreshTree(); }
     else { alert(data.error || 'Failed'); }
@@ -1681,12 +1681,12 @@ function toggleWorkspace() {
     document.getElementById('workspaceToggle').textContent = workspaceCollapsed ? '▸' : '▾';
 }
 
-async function refreshWorkspace(runId) {
-    if (!runId) {
+async function refreshWorkspace(agentId) {
+    if (!agentId) {
         document.getElementById('workspacePanel').style.display = 'none';
         return;
     }
-    const resp = await fetch(`/api/run/${runId}/workspace`);
+    const resp = await fetch(`/api/agent/${agentId}/workspace`);
     const data = await resp.json();
     const files = data.files || [];
     const branches = data.branches || [];
@@ -1700,27 +1700,27 @@ async function refreshWorkspace(runId) {
     if (!isOnTaskBranch && branchNames.length > 0) {
         const baseBranch = branches.find(b => b.is_base) || branches[0];
         try {
-            const swResp = await fetch(`/api/run/${runId}/workspace/branch`, {
+            const swResp = await fetch(`/api/agent/${agentId}/workspace/branch`, {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({branch: baseBranch.name}),
             });
             const swResult = await swResp.json();
             if (swResult.ok) {
-                const resp2 = await fetch(`/api/run/${runId}/workspace`);
+                const resp2 = await fetch(`/api/agent/${agentId}/workspace`);
                 const data2 = await resp2.json();
-                renderWorkspaceData(runId, data2);
-                refreshDag(runId);
+                renderWorkspaceData(agentId, data2);
+                refreshDag(agentId);
                 return;
             }
         } catch (e) {
             // 切换失败，继续用当前数据渲染
         }
     }
-    renderWorkspaceData(runId, data);
+    renderWorkspaceData(agentId, data);
 }
 
-function renderWorkspaceData(runId, data) {
+function renderWorkspaceData(agentId, data) {
     const files = data.files || [];
     const branches = data.branches || [];
     const currentBranch = data.current_branch || '';
@@ -1761,12 +1761,12 @@ function renderWorkspaceData(runId, data) {
         let html = '';
         // 基准分支
         if (baseBranch) {
-            html += renderBranchItem(baseBranch, baseBranch.name === currentBranch, runId, 0, true);
+            html += renderBranchItem(baseBranch, baseBranch.name === currentBranch, agentId, 0, true);
         }
         // 衍生分支
         const lastIdx = derivedBranches.length - 1;
         derivedBranches.forEach((b, idx) => {
-            html += renderBranchItem(b, b.name === currentBranch, runId, 1, idx === lastIdx);
+            html += renderBranchItem(b, b.name === currentBranch, agentId, 1, idx === lastIdx);
         });
         branchList.innerHTML = html;
     } else {
@@ -1782,7 +1782,7 @@ function renderWorkspaceData(runId, data) {
     container.innerHTML = files.map(f => {
         const size = f.size < 1024 ? `${f.size}B` : `${(f.size/1024).toFixed(1)}K`;
         const mtime = new Date(f.mtime * 1000).toLocaleTimeString();
-        return `<div class="workspace-file" onclick="previewFile('${escapeHtml(runId)}', '${escapeHtml(f.path)}')">
+        return `<div class="workspace-file" onclick="previewFile('${escapeHtml(agentId)}', '${escapeHtml(f.path)}')">
             <span class="wf-icon">${fileIcon(f.path)}</span>
             <span class="wf-name">${escapeHtml(f.path)}</span>
             <span class="wf-meta">${size} · ${mtime}</span>
@@ -1791,10 +1791,10 @@ function renderWorkspaceData(runId, data) {
     }
 }
 
-async function switchBranch(runId, branch) {
+async function switchBranch(agentId, branch) {
     if (!confirm(`切换到分支 \"${branch}\"？工作区文件将被替换。`)) return;
     try {
-        const resp = await fetch(`/api/run/${runId}/workspace/branch`, {
+        const resp = await fetch(`/api/agent/${agentId}/workspace/branch`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({branch: branch}),
@@ -1802,21 +1802,21 @@ async function switchBranch(runId, branch) {
         const result = await resp.json();
         if (result.ok) {
             showToast(`已切换到: ${branch}`, 'success');
-            await refreshWorkspace(runId);
-            await refreshDag(runId);
+            await refreshWorkspace(agentId);
+            await refreshDag(agentId);
             const wsId = document.getElementById('workspaceBranch')?.dataset?.taskName || '';
             refreshTree(wsId);
         } else {
             showToast(`切换失败: ${result.error}`, 'error');
-            refreshWorkspace(runId);
+            refreshWorkspace(agentId);
         }
     } catch (e) {
         showToast(`切换失败: ${e.message}`, 'error');
-        refreshWorkspace(runId);
+        refreshWorkspace(agentId);
     }
 }
 
-function renderBranchItem(branch, isCurrent, runId, depth, isBase, isLast) {
+function renderBranchItem(branch, isCurrent, agentId, depth, isBase, isLast) {
     const name = branch.name;
     const display = branch.display || '';
     const icon = isCurrent ? '●' : '○';
@@ -1833,10 +1833,10 @@ function renderBranchItem(branch, isCurrent, runId, depth, isBase, isLast) {
     const tag = isCurrent ? '<span class="branch-tag">当前</span>' : '';
     // 衍生分支显示删除按钮（hover 可见）
     const delBtn = (!isBase && depth > 0)
-        ? `<button class="branch-del-btn" title="删除此分支" onclick="event.stopPropagation(); deleteBranch('${escapeHtml(name)}', '${escapeHtml(runId)}')">×</button>`
+        ? `<button class="branch-del-btn" title="删除此分支" onclick="event.stopPropagation(); deleteBranch('${escapeHtml(name)}', '${escapeHtml(agentId)}')">×</button>`
         : '';
 
-    return `<div class="${cls}" onclick="switchBranch('${escapeHtml(runId)}', '${escapeHtml(name)}')" style="padding-left: ${8 + depth * 18}px">
+    return `<div class="${cls}" onclick="switchBranch('${escapeHtml(agentId)}', '${escapeHtml(name)}')" style="padding-left: ${8 + depth * 18}px">
         <span class="branch-icon">${icon}</span>
         <span class="branch-tree-prefix">${prefix}</span>
         <span class="branch-label">${escapeHtml(label)}</span>
@@ -1846,7 +1846,7 @@ function renderBranchItem(branch, isCurrent, runId, depth, isBase, isLast) {
     </div>`;
 }
 
-async function deleteBranch(branchName, runId) {
+async function deleteBranch(branchName, agentId) {
     if (!confirm(`确定删除分支 "${branchName}"？此操作不可恢复。`)) return;
     try {
         const resp = await fetch(`/api/branch/${encodeURIComponent(branchName)}`, {
@@ -1855,7 +1855,7 @@ async function deleteBranch(branchName, runId) {
         const result = await resp.json();
         if (result.ok) {
             showToast(`已删除分支: ${branchName}`, 'success');
-            refreshWorkspace(runId);
+            refreshWorkspace(agentId);
         } else {
             showToast(`删除失败: ${result.error}`, 'error');
         }
@@ -1879,12 +1879,12 @@ async function createBranch() {
     const name = nameInput.value.trim();
     if (!name) return;
     // 创建分支：在当前 run 的 workspace 中执行 git branch + checkout
-    const runId = currentRunId;
-    if (!runId) return;
+    const agentId = currentAgentId;
+    if (!agentId) return;
     try {
         // 通过分支切换 API，先创建分支（在 git 中已存在则切换，否则需要服务端支持创建）
         // 当前 API 只支持切换已存在的分支，需要服务端扩展
-        const resp = await fetch(`/api/run/${runId}/workspace/branch/create`, {
+        const resp = await fetch(`/api/agent/${agentId}/workspace/branch/create`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({branch: name}),
@@ -1893,7 +1893,7 @@ async function createBranch() {
         if (result.ok) {
             showToast(`已创建并切换到: ${name}`, 'success');
             hideCreateBranch();
-            refreshWorkspace(runId);
+            refreshWorkspace(agentId);
         } else {
             showToast(`创建失败: ${result.error}`, 'error');
         }
@@ -1907,16 +1907,16 @@ async function createBranch() {
 // ============================================================
 let dagData = null;  // 缓存 DAG 数据
 
-async function refreshDag(runId) {
-    console.log('[refreshDag] called with runId=', runId);
+async function refreshDag(agentId) {
+    console.log('[refreshDag] called with agentId=', agentId);
     const panel = document.getElementById('dagPanel');
-    if (!runId) { console.log('[refreshDag] no runId, hiding'); panel.style.display = 'none'; return; }
+    if (!agentId) { console.log('[refreshDag] no agentId, hiding'); panel.style.display = 'none'; return; }
     let data;
     try {
         const taskName = document.getElementById('workspaceBranch')?.dataset?.taskName || '';
         const url = taskName
-            ? `/api/run/${runId}/dag?workspace_id=${encodeURIComponent(taskName)}`
-            : `/api/run/${runId}/dag`;
+            ? `/api/agent/${agentId}/dag?workspace_id=${encodeURIComponent(taskName)}`
+            : `/api/agent/${agentId}/dag`;
         console.log('[refreshDag] fetching', url);
         const resp = await fetch(url);
         data = await resp.json();
@@ -2053,7 +2053,7 @@ function renderDagGraph() {
 }
 
 function dagNodeClick(stepId) {
-    if (!currentRunId) return;
+    if (!currentAgentId) return;
     const node = dagData.find(s => s.id === stepId);
     if (!node || !node.sha) {
         showToast(`节点 ${stepId} 尚未完成，无法回退`);
@@ -2069,7 +2069,7 @@ function dagNodeClick(stepId) {
         `⚠️ 受影响的 DAG 节点: ${affectedNames}\n\n` +
         `此操作不可撤销。`
     )) return;
-    checkoutStep(currentRunId, stepId);
+    checkoutStep(currentAgentId, stepId);
 }
 
 // 获取该 step 及所有下游节点
@@ -2126,10 +2126,10 @@ function toggleDag() {
     toggle.textContent = collapsed ? '▾' : '▸';
 }
 
-async function checkoutStep(runId, stepId) {
+async function checkoutStep(agentId, stepId) {
     if (!confirm(`确定回退到 step "${stepId}"？\n将从该 commit 创建新分支，原分支保持不变。`)) return;
     try {
-        const resp = await fetch(`/api/run/${runId}/dag/checkout`, {
+        const resp = await fetch(`/api/agent/${agentId}/dag/checkout`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({step_id: stepId, rerun_downstream: true})
@@ -2138,8 +2138,8 @@ async function checkoutStep(runId, stepId) {
         if (data.error) { showToast(`回退失败: ${data.error}`, 'error'); return; }
         const branchInfo = data.branch ? `（新分支: ${data.branch}）` : '';
         showToast(`已回退到 step ${stepId}${branchInfo}`, 'success');
-        await refreshWorkspace(runId);
-        await refreshDag(runId);
+        await refreshWorkspace(agentId);
+        await refreshDag(agentId);
         const wsId = document.getElementById('workspaceBranch')?.dataset?.taskName || '';
         refreshTree(wsId);
     } catch (e) {
@@ -2153,8 +2153,8 @@ function fileIcon(path) {
     return map[ext] || '📄';
 }
 
-async function previewFile(runId, path) {
-    const resp = await fetch(`/api/run/${runId}/workspace/file?path=${encodeURIComponent(path)}`);
+async function previewFile(agentId, path) {
+    const resp = await fetch(`/api/agent/${agentId}/workspace/file?path=${encodeURIComponent(path)}`);
     const data = await resp.json();
     if (data.error) { alert(data.error); return; }
 
@@ -2180,8 +2180,8 @@ setInterval(() => { if (!_treeRefreshPaused) refreshTree(); }, 3000);
 // ============================================================
 const _runLabels = {};  // run_id -> label，本地缓存
 
-function renameRun(runId) {
-    const nodeEl = document.querySelector(`.tree-node[data-run-id="${runId}"]`);
+function renameAgent(agentId) {
+    const nodeEl = document.querySelector(`.tree-node[data-agent-id="${agentId}"]`);
     const promptEl = nodeEl ? nodeEl.querySelector('.tree-node-prompt') : null;
     if (!promptEl) return;
     const current = promptEl.textContent;
@@ -2204,7 +2204,7 @@ function renameRun(runId) {
         span.textContent = newLabel || current;
         input.replaceWith(span);
         if (newLabel === current) return;
-        fetch(`/api/run/${runId}/label`, {
+        fetch(`/api/agent/${agentId}/label`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ label: newLabel }),

@@ -12,7 +12,7 @@ class RunRequest(BaseModel):
     workspace_name: str | None = None
     system_prompt: str | None = None
     task_type: str = "generative"  # generative / interactive / explore
-    interactive: bool = False       # 兼容旧字段
+    interactive: bool = False
     goal: str | None = None
     max_goal_retries: int | None = None
     supervisor: str | None = None  # 监督 Agent 的 system prompt
@@ -55,7 +55,7 @@ class SpawnTask(BaseModel):
 class SpawnRequest(BaseModel):
     tasks: List[SpawnTask]
     wait_strategy: str = "all"
-    parent_run_id: str = ""
+    parent_id: str = ""
     parent_session_id: str = ""
 
 
@@ -73,10 +73,10 @@ class PlanDecisionRequest(BaseModel):
 
 
 class ReportRequest(BaseModel):
-    run_id: str = ""
+    agent_id: str = ""
     result: str
 
 
 class SendMsgRequest(BaseModel):
-    run_id: str = ""
+    agent_id: str = ""
     msg: str

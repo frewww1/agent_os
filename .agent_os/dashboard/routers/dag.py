@@ -1,4 +1,4 @@
-"""DAG API 路由 — /api/dag/*, /api/run/{id}/dag*"""
+"""DAG API 路由 — /api/dag/*, /api/agent/{id}/dag*"""
 import json
 import os
 import re
@@ -8,27 +8,11 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from ..models import DagStartRequest
+from .deps import get_agent_os, get_project_root, safe_run as _safe_run
 
 router = APIRouter(prefix="/api", tags=["dag"])
 
 DAG_TEMPLATES_DIR = Path(__file__).parent.parent.parent / "dag_templates"
-
-
-def get_agent_os():
-    from ..app import agent_os
-    return agent_os
-
-
-def _get_project_root() -> Path | None:
-    agent_os = get_agent_os()
-    if agent_os:
-        return Path(agent_os.project_root)
-    return None
-
-
-def _safe_run(*args, **kwargs):
-    from ...src.utils import safe_run
-    return safe_run(*args, **kwargs)
 
 
 def _resolve_workspace_dir(workspace_id: str) -> Path | None:
@@ -153,35 +137,35 @@ async def start_dag(req: DagStartRequest):
     )
     prompt = f"请继续执行 DAG，任务名: {req.workspace_name}" if req.resume \
         else f"请执行 DAG 模板: {req.template_id}，任务名: {req.workspace_name}"
-    run_id = agent_os.start_run(prompt=prompt, agent_name=req.workspace_name,
+    agent_id = agent_os.start_agent(prompt=prompt, agent_name=req.workspace_name,
                           model=req.model, workspace_name=req.workspace_name,
                           system_prompt=system_prompt)
-    return JSONResponse({"run_id": run_id, "template": req.template_id, "resume": req.resume})
+    return JSONResponse({"agent_id": agent_id, "template": req.template_id, "resume": req.resume})
 
 
-@router.get("/run/{run_id}/dag")
-async def get_dag(run_id: str, workspace_id: str = ""):
+@router.get("/agent/{agent_id}/dag")
+async def get_dag(agent_id: str, workspace_id: str = ""):
     agent_os = get_agent_os()
     if not agent_os:
         return JSONResponse({"error": "not initialized"}, status_code=500)
     if workspace_id:
         result = agent_os.dag_status_by_workspace(workspace_id)
     else:
-        result = agent_os.dag_status(run_id)
+        result = agent_os.dag_status(agent_id)
     if not result.get("ok"):
         return JSONResponse({"error": result.get("error", "no dag")}, status_code=400)
     return JSONResponse(result)
 
 
-@router.post("/run/{run_id}/dag/checkout")
-async def dag_checkout(run_id: str, req: dict):
+@router.post("/agent/{agent_id}/dag/checkout")
+async def dag_checkout(agent_id: str, req: dict):
     agent_os = get_agent_os()
     if not agent_os:
         return JSONResponse({"error": "not initialized"}, status_code=500)
     step_id = req.get("step_id")
     if not step_id:
         return JSONResponse({"error": "step_id required"}, status_code=400)
-    result = agent_os.dag_checkout(run_id, step_id,
+    result = agent_os.dag_checkout(agent_id, step_id,
                              rerun_downstream=bool(req.get("rerun_downstream")))
     if not result.get("ok"):
         return JSONResponse({"error": result.get("error", "checkout failed")}, status_code=400)
@@ -220,38 +204,3 @@ async def dag_steps(workspace_id: str):
 @router.get("/dag/{workspace_id}/checkout/{step_id}")
 async def dag_checkout_step(workspace_id: str, step_id: str):
     return JSONResponse({"error": "git disabled"}, status_code=400)
-    # from agent_os.src.persistence.git_recorder import Recorder as _Recorder  # TODO: git 功能暂时禁用
-    # from agent_os.src.core.dag_planner import reset_steps
-    # 
-    # project_root = str(_get_project_root()) if _get_project_root() else None
-    # recorder = _Recorder(project_root=project_root)
-    # ws_dir = _resolve_workspace_dir(workspace_id)
-    # if not ws_dir:
-    #     return JSONResponse({"error": "workspace not found"}, status_code=404)
-    # result = recorder.checkout_step(step_id, str(ws_dir))
-    if not result.get("ok"):
-        return JSONResponse({"error": result.get("error", "checkout failed")}, status_code=404)
-    dag_file = Path(ws_dir) / "dag.json"
-    affected = 0
-    if dag_file.is_file():
-        try:
-            dag = json.loads(dag_file.read_text(encoding="utf-8"))
-            steps = dag.get("steps", [])
-            affected = len(reset_steps(steps, [step_id]))
-            dag_file.write_text(json.dumps(dag, indent=2, ensure_ascii=False), encoding="utf-8")
-        except Exception:
-            affected = 0
-    if affected > 0 and project_root:
-        try:
-            dag_path_rel = os.path.relpath(str(dag_file), project_root).replace("\\", "/")
-            _safe_run(["git", "add", dag_path_rel], cwd=project_root, capture_output=True, timeout=10)
-            _safe_run(["git", "commit", "-m",
-                       f"[checkout:{workspace_id}:{step_id}] reset {affected} step(s) to pending"],
-                      cwd=project_root, capture_output=True, timeout=15)
-        except Exception:
-            pass
-    return JSONResponse({
-        "ok": True, "step_id": step_id,
-        "commit": result.get("sha", "")[:8] if result.get("sha") else "",
-        "branch": result.get("branch", ""), "affected_steps": affected,
-    })

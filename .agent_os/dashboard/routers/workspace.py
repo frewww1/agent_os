@@ -1,6 +1,7 @@
-"""Workspace API 路由 — /api/workspace*, /api/run/{id}/workspace*, /api/branch/*"""
+"""Workspace API 路由 — /api/workspace*, /api/agent/{id}/workspace*, /api/branch/*"""
+import base64
 import json
-import subprocess
+import platform as _pf
 from pathlib import Path
 
 from fastapi import APIRouter
@@ -8,43 +9,27 @@ from fastapi.responses import JSONResponse
 
 from ..models import SwitchBranchRequest
 from ..git_utils import get_git_branches, get_current_branch, git_checkout_with_stash
+from .deps import get_agent_os, get_project_root, safe_run as _safe_run
 
 router = APIRouter(prefix="/api", tags=["workspace"])
 
 WORKSPACES_DIR = Path(__file__).parent.parent.parent / "workspaces"
 
 
-def get_agent_os():
-    from ..app import agent_os
-    return agent_os
-
-
-def _get_project_root() -> Path | None:
-    agent_os = get_agent_os()
-    if agent_os:
-        return Path(agent_os.project_root)
-    return None
-
-
 def _get_git_dir() -> Path | None:
-    root = _get_project_root()
+    root = get_project_root()
     if root and (root / ".git").is_dir():
         return root
     return None
 
 
-def _get_workspace_dir(run_id: str) -> Path:
+def _get_workspace_dir(agent_id: str) -> Path:
     agent_os = get_agent_os()
     if agent_os:
-        ri = agent_os.get_run(run_id)
-        if ri and ri.workspace_path:
-            return Path(ri.workspace_path)
-    return WORKSPACES_DIR / run_id
-
-
-def _safe_run(*args, **kwargs):
-    from ...src.utils import safe_run
-    return safe_run(*args, **kwargs)
+        agent = agent_os.get_agent(agent_id)
+        if agent and agent.workspace_path:
+            return Path(agent.workspace_path)
+    return WORKSPACES_DIR / agent_id
 
 
 @router.get("/workspaces")
@@ -90,33 +75,33 @@ async def delete_workspace(req: dict):
         return norm.rsplit("/", 1)[-1] if norm else ""
 
     target_root_ids = []
-    for ri in list(agent_os._registry.runs.values()):
-        if ri.parent_run_id:
+    for agent in list(agent_os.agents.values()):
+        if agent.parent_id:
             continue
-        if _ws_tail(getattr(ri, "workspace_path", "") or "") == name:
-            target_root_ids.append(ri.run_id)
+        if _ws_tail(agent.workspace_path or "") == name:
+            target_root_ids.append(agent.agent_id)
 
     if not target_root_ids:
         return JSONResponse({"deleted_runs": 0, "deleted_roots": 0, "workspace": name})
 
     ws_paths_to_purge = set()
 
-    def _collect_ws(rid: str):
-        ri = agent_os._registry.runs.get(rid)
-        if not ri:
+    def _collect_ws(aid: str):
+        agent = agent_os.agents.get(aid)
+        if not agent:
             return
-        if ri.workspace_path:
-            ws_paths_to_purge.add(ri.workspace_path)
-        for cid in list(ri.children_run_ids):
+        if agent.workspace_path:
+            ws_paths_to_purge.add(agent.workspace_path)
+        for cid in agent.children_ids:
             _collect_ws(cid)
 
-    for rid in target_root_ids:
-        _collect_ws(rid)
+    for aid in target_root_ids:
+        _collect_ws(aid)
 
     deleted_runs = 0
     deleted_roots = 0
-    for rid in target_root_ids:
-        n = agent_os.delete_run(rid, recursive=True)
+    for aid in target_root_ids:
+        n = agent_os.delete_agent(aid, recursive=True)
         if n > 0:
             deleted_roots += 1
             deleted_runs += n
@@ -142,7 +127,6 @@ async def delete_workspace(req: dict):
             except Exception:
                 pass
 
-    import platform as _pf
     purged = []
     for wp in ws_paths_to_purge:
         try:
@@ -165,13 +149,13 @@ async def delete_workspace(req: dict):
     })
 
 
-@router.get("/run/{run_id}/workspace")
-async def list_workspace_files(run_id: str):
-    workspace_dir = _get_workspace_dir(run_id)
+@router.get("/agent/{agent_id}/workspace")
+async def list_workspace_files(agent_id: str):
+    workspace_dir = _get_workspace_dir(agent_id)
     if not workspace_dir.exists():
         return JSONResponse({"files": [], "branches": []})
     task_name = workspace_dir.name
-    git_base = _get_project_root() or workspace_dir
+    git_base = get_project_root() or workspace_dir
     branches = get_git_branches(git_base, task_name=task_name)
     current_branch = get_current_branch(git_base)
     SKIP_DIRS = {".git"}
@@ -197,9 +181,9 @@ async def list_workspace_files(run_id: str):
     })
 
 
-@router.get("/run/{run_id}/workspace/file")
-async def get_workspace_file(run_id: str, path: str):
-    workspace_dir = _get_workspace_dir(run_id)
+@router.get("/agent/{agent_id}/workspace/file")
+async def get_workspace_file(agent_id: str, path: str):
+    workspace_dir = _get_workspace_dir(agent_id)
     try:
         target = (workspace_dir / path).resolve()
         target.relative_to(workspace_dir.resolve())
@@ -211,14 +195,13 @@ async def get_workspace_file(run_id: str, path: str):
         content = target.read_text(encoding="utf-8")
         return JSONResponse({"path": path, "type": "text", "content": content})
     except UnicodeDecodeError:
-        import base64
         content = base64.b64encode(target.read_bytes()).decode()
         return JSONResponse({"path": path, "type": "binary", "content": content})
 
 
 @router.post("/run/{run_id}/workspace/branch")
 async def switch_branch(run_id: str, req: SwitchBranchRequest):
-    git_base = _get_project_root() or _get_workspace_dir(run_id)
+    git_base = get_project_root() or _get_workspace_dir(run_id)
     if not (git_base / ".git").is_dir():
         return JSONResponse({"ok": False, "error": "not a git repository"})
     result = git_checkout_with_stash(git_base, req.branch)
@@ -227,9 +210,9 @@ async def switch_branch(run_id: str, req: SwitchBranchRequest):
     return JSONResponse({"ok": False, "error": result["error"]})
 
 
-@router.post("/run/{run_id}/workspace/branch/create")
-async def create_branch(run_id: str, req: SwitchBranchRequest):
-    git_base = _get_project_root() or _get_workspace_dir(run_id)
+@router.post("/agent/{agent_id}/workspace/branch/create")
+async def create_branch(agent_id: str, req: SwitchBranchRequest):
+    git_base = get_project_root() or _get_workspace_dir(agent_id)
     if not (git_base / ".git").is_dir():
         return JSONResponse({"ok": False, "error": "not a git repository"})
     branch = req.branch

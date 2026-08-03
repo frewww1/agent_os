@@ -1,31 +1,15 @@
-"""Export + Diff + Recordings API — /api/run/{id}/export, /api/run/{id}/diffs, /api/recordings, /api/completions, /api/models"""
+"""Export + Diff + Recordings API — /api/agent/{id}/export, /api/agent/{id}/diffs, /api/recordings, /api/completions, /api/models"""
 import json
 import os
 import re
-import subprocess
 from pathlib import Path
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse, Response
 
+from .deps import get_agent_os, get_project_root, safe_run as _safe_run
+
 router = APIRouter(prefix="/api", tags=["export"])
-
-
-def get_agent_os():
-    from ..app import agent_os
-    return agent_os
-
-
-def _get_project_root() -> Path | None:
-    agent_os = get_agent_os()
-    if agent_os:
-        return Path(agent_os.project_root)
-    return None
-
-
-def _safe_run(*args, **kwargs):
-    from ...src.utils import safe_run
-    return safe_run(*args, **kwargs)
 
 
 @router.get("/models")
@@ -36,19 +20,19 @@ async def list_models(refresh: bool = False):
     return JSONResponse({"models": agent_os.list_models(refresh=refresh)})
 
 
-@router.get("/run/{run_id}/diffs")
-async def get_run_diffs(run_id: str):
+@router.get("/agent/{agent_id}/diffs")
+async def get_agent_diffs(agent_id: str):
     agent_os = get_agent_os()
     if not agent_os:
         return JSONResponse({"error": "not initialized"}, status_code=500)
     if not agent_os.recorder:
         return JSONResponse({"error": "git disabled", "turns": [], "agent": None, "steps": []})
-    ri = agent_os.get_run(run_id)
-    if not ri or not ri.workspace_path:
-        return JSONResponse({"error": "run not found or no workspace"}, status_code=404)
-    ws = ri.workspace_path
+    agent = agent_os.get_agent(agent_id)
+    if not agent or not agent.workspace_path:
+        return JSONResponse({"error": "agent not found or no workspace"}, status_code=404)
+    ws = agent.workspace_path
     result = {"turns": [], "agent": None, "steps": []}
-    for tc in agent_os.recorder.turn_commits(run_id, ws):
+    for tc in agent_os.recorder.turn_commits(agent_id, ws):
         turn_diff = _commit_diff(tc["sha"], ws)
         result["turns"].append({
             "turn": tc["turn"], "sha": tc["sha"][:8],
@@ -95,52 +79,52 @@ def _commit_diff(sha: str, ws: str, is_range: bool = False) -> dict:
         return {"diff": "", "files": []}
 
 
-@router.get("/run/{run_id}/export")
-async def export_run(run_id: str, format: str = "md"):
+@router.get("/agent/{agent_id}/export")
+async def export_agent(agent_id: str, format: str = "md"):
     agent_os = get_agent_os()
     if not agent_os:
         return JSONResponse({"error": "not initialized"}, status_code=500)
-    run_info = agent_os.get_run(run_id)
-    if not run_info:
-        return JSONResponse({"error": "run not found"}, status_code=404)
+    agent = agent_os.get_agent(agent_id)
+    if not agent:
+        return JSONResponse({"error": "agent not found"}, status_code=404)
     if format == "json":
-        body = _json_export(run_info)
+        body = _json_export(agent)
         return Response(content=body, media_type="application/json",
-                        headers={"Content-Disposition": f'attachment; filename="agent-{run_id}.json"'})
-    body = _md_export(run_info)
+                        headers={"Content-Disposition": f'attachment; filename="agent-{agent_id}.json"'})
+    body = _md_export(agent)
     return Response(content=body, media_type="text/markdown; charset=utf-8",
-                    headers={"Content-Disposition": f'attachment; filename="agent-{run_id}.md"'})
+                    headers={"Content-Disposition": f'attachment; filename="agent-{agent_id}.md"'})
 
 
-def _json_export(ri) -> str:
+def _json_export(agent) -> str:
     return json.dumps({
-        "run_id": ri.run_id, "prompt": ri.prompt, "model": ri.model,
-        "task_type": ri.task_type, "interactive": ri.interactive,
-        "status": ri.status.value, "session_id": ri.session_id,
-        "started_at": ri.started_at.isoformat(),
-        "completed_at": ri.completed_at.isoformat() if ri.completed_at else None,
-        "turns": len(ri.turn_markers), "reported_result": ri.reported_result,
-        "user_terminated": ri.user_terminated, "messages": list(ri.messages),
-        "events": list(ri.output_events),
+        "agent_id": agent.agent_id, "prompt": agent.prompt, "model": agent.model,
+        "task_type": agent.task_type, "interactive": agent.interactive,
+        "status": agent.status.value, "session_id": agent.session_id,
+        "started_at": agent.started_at.isoformat(),
+        "completed_at": agent.completed_at.isoformat() if agent.completed_at else None,
+        "turns": len(agent.turn_markers), "reported_result": agent.reported_result,
+        "user_terminated": agent.user_terminated, "messages": list(agent.messages),
+        "events": list(agent.output_events),
     }, ensure_ascii=False, indent=2)
 
 
-def _md_export(ri) -> str:
-    lines = [f"# Agent OS — run `{ri.run_id}`", ""]
-    if ri.model:
-        lines.append(f"- **Model**: `{ri.model}`")
-    lines.append(f"- **Status**: `{ri.status.value}`")
-    lines.append(f"- **Task type**: `{ri.task_type}`")
-    if ri.session_id:
-        lines.append(f"- **Session**: `{ri.session_id}`")
-    lines.append(f"- **Started**: {ri.started_at.isoformat()}")
-    if ri.completed_at:
-        lines.append(f"- **Completed**: {ri.completed_at.isoformat()}")
-    lines.append(f"- **Turns**: {len(ri.turn_markers)}")
-    if ri.user_terminated:
+def _md_export(agent) -> str:
+    lines = [f"# Agent OS — agent `{agent.agent_id}`", ""]
+    if agent.model:
+        lines.append(f"- **Model**: `{agent.model}`")
+    lines.append(f"- **Status**: `{agent.status.value}`")
+    lines.append(f"- **Task type**: `{agent.task_type}`")
+    if agent.session_id:
+        lines.append(f"- **Session**: `{agent.session_id}`")
+    lines.append(f"- **Started**: {agent.started_at.isoformat()}")
+    if agent.completed_at:
+        lines.append(f"- **Completed**: {agent.completed_at.isoformat()}")
+    lines.append(f"- **Turns**: {len(agent.turn_markers)}")
+    if agent.user_terminated:
         lines.append("- **Ended by user (Done)**")
     lines.extend(["", "---", ""])
-    for ev in ri.output_events:
+    for ev in agent.output_events:
         kind = ev.get("kind")
         if kind == "turn":
             lines.append(f"\n## Turn {ev.get('index', '?')}\n")
@@ -215,72 +199,8 @@ async def get_completions():
 @router.get("/recordings")
 async def get_recordings():
     return JSONResponse([])  # TODO: git 功能暂时禁用
-    # from agent_os.src.persistence.git_recorder import Recorder as _Recorder
-    # recorder = _Recorder(project_root=str(_get_project_root()) if _get_project_root() else None)
-    workspaces_dir = Path(__file__).parent.parent.parent / "workspaces"
-    all_recordings = []
-    state_file = Path(__file__).parent.parent.parent / "state" / "runs.json"
-    rel_index = {}
-    if state_file.is_file():
-        try:
-            state = json.loads(state_file.read_text(encoding="utf-8"))
-            for run in state.get("runs", []):
-                rid = run.get("run_id")
-                if rid:
-                    rel_index[rid] = run
-        except Exception:
-            pass
-    if workspaces_dir.is_dir():
-        for ws_dir in sorted(workspaces_dir.iterdir(), reverse=True):
-            if not ws_dir.is_dir():
-                continue
-            records = recorder.list_runs(str(ws_dir))
-            if records:
-                for r in records:
-                    r["workspace_path"] = str(ws_dir)
-                    state_run = rel_index.get(r.get("run_id"))
-                    if state_run:
-                        r["parent_run_id"] = state_run.get("parent_run_id", "") or ""
-                        r["children_run_ids"] = state_run.get("children_run_ids", []) or []
-                        r["status"] = state_run.get("status", "")
-                        r["spawn_id"] = state_run.get("spawn_id", "") or ""
-                    else:
-                        r.setdefault("parent_run_id", "")
-                        r.setdefault("children_run_ids", [])
-                        r.setdefault("status", "")
-                        r.setdefault("spawn_id", "")
-                all_recordings.append({"workspace": ws_dir.name, "runs": records})
-    return JSONResponse({"workspaces": all_recordings})
 
 
-@router.get("/recording/{workspace_id}/{run_id}/diff")
-async def get_recording_diff(workspace_id: str, run_id: str):
-    workspaces_dir = Path(__file__).parent.parent.parent / "workspaces"
-    ws_dir = workspaces_dir / workspace_id
-    if not ws_dir.is_dir():
-        for d in workspaces_dir.iterdir():
-            if d.is_dir() and d.name.startswith(workspace_id):
-                ws_dir = d
-                break
-    if not ws_dir.is_dir():
-        return JSONResponse({"error": "workspace not found"}, status_code=404)
-    commit_msg = f"[{run_id[:8]}]"
-    try:
-        r = _safe_run(["git", "log", "--oneline", "--grep", commit_msg, "-n", "1"],
-                      cwd=str(ws_dir), capture_output=True, text=True, timeout=10)
-        if not r.stdout.strip():
-            return JSONResponse({"error": "commit not found"}, status_code=404)
-        commit_hash = r.stdout.strip().split()[0]
-        r2 = _safe_run(["git", "diff", f"{commit_hash}~1", commit_hash],
-                       cwd=str(ws_dir), capture_output=True, text=True, timeout=10)
-        diff_text = r2.stdout.strip()
-        if not diff_text:
-            r2 = _safe_run(["git", "show", "--format=", commit_hash],
-                           cwd=str(ws_dir), capture_output=True, text=True, timeout=10)
-            diff_text = r2.stdout.strip()
-        r3 = _safe_run(["git", "diff-tree", "--no-commit-id", "--name-only", "-r", commit_hash],
-                       cwd=str(ws_dir), capture_output=True, text=True, timeout=10)
-        files = [f for f in r3.stdout.strip().split("\n") if f and not f.startswith("runs/")]
-        return JSONResponse({"commit": commit_hash, "diff": diff_text or "(无变更)", "files": files})
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+@router.get("/recording/{workspace_id}/{agent_id}/diff")
+async def get_recording_diff(workspace_id: str, agent_id: str):
+    return JSONResponse({"error": "git recordings disabled"}, status_code=503)

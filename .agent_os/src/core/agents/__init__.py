@@ -5,8 +5,10 @@ from .task import TaskAgent
 from .explore import ExploreAgent
 from .interactive import InteractiveAgent
 from .supervisor import SupervisorAgent
+from .goal import GoalAgent
 
 __all__ = [
     "Agent", "RootAgent", "TaskAgent", "ExploreAgent",
-    "InteractiveAgent", "SupervisorAgent", "find_latest_plan_file",
+    "InteractiveAgent", "SupervisorAgent", "GoalAgent",
+    "find_latest_plan_file",
 ]

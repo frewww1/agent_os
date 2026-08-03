@@ -3,13 +3,9 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from ..models import SpawnRequest
+from .deps import get_agent_os
 
 router = APIRouter(prefix="/api", tags=["spawn"])
-
-
-def get_agent_os():
-    from ..app import agent_os
-    return agent_os
 
 
 @router.post("/spawn")
@@ -21,7 +17,7 @@ async def spawn_children(req: SpawnRequest):
               "model": t.model, "step_id": t.step_id,
               "goal": t.goal, "supervisor": t.supervisor} for t in req.tasks]
     result = agent_os.spawn_children(
-        parent_run_id=req.parent_run_id, parent_session_id=req.parent_session_id,
+        parent_id=req.parent_id, parent_session_id=req.parent_session_id,
         tasks=tasks, wait_strategy=req.wait_strategy,
     )
     return JSONResponse(result)

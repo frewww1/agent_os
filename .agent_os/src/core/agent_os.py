@@ -3,24 +3,17 @@ import asyncio
 import json as _json
 import logging
 import os
+import re
 import threading
 from datetime import datetime
 from typing import AsyncGenerator
 
-from .dag.service import DagService
+from .dag import planner as dp
 from .env_config import build_agent_env
-from .infra.event_bus import EventBus
-from .registry import Registry
-from .infra.run_state_machine import RunStateMachine
-from .graph.goal import GoalGraph
-from .graph.supervisor import SupervisorGraph
-from .agents import Agent
-from .models import RunStatus, RunInfo
-from ..persistence.sqlite import load_runs_from_disk
+from .agents import Agent, RootAgent
+from .agents.base import RunStatus
+from ..persistence.sqlite import load_agents_from_disk, save_agents_to_disk
 from ..agent import get_backend
-from ._launch import LaunchMixin
-from ._persistence import PersistenceMixin
-from ._watcher import WatcherMixin
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -37,13 +30,15 @@ logging.basicConfig(
 logger = logging.getLogger("agent_os")
 
 
-class AgentOS(LaunchMixin, PersistenceMixin, WatcherMixin):
+class AgentOS:
     """Agent OS Runtime — 多 Agent 进程生命周期管理 + 编排 + 记忆层。
 
-    Mixin 组合:
-    - LaunchMixin: 进程启动 3 阶段管道 + resume
-    - PersistenceMixin: 节流写盘 + EventBus 订阅
-    - WatcherMixin: 超时看护 + 重启恢复
+    职责:
+    - agents 字典（全局索引）
+    - 持久化调度（节流写盘）
+    - 超时看护
+    - DAG 编排
+    - 对外 API（薄委托给 Agent）
     """
 
     def __init__(self, project_root: str = ".", cli_command: str = "claude", port: int = 8420,
@@ -56,9 +51,12 @@ class AgentOS(LaunchMixin, PersistenceMixin, WatcherMixin):
         self._backend = get_backend(_bt, cli_command=cli_command)
         self.cli_command = cli_command
         logger.info(f"AgentOS: backend={type(self._backend).__name__}")
-        self._registry = Registry()
+
+        self.agents: dict[str, Agent] = {}
         self._models_cache: list[str] | None = None
         self.recorder = None
+        self._originally_waiting: set[str] = set()
+        self.MAX_GOAL_RETRIES = 5
 
         if loop is not None:
             self._loop = loop
@@ -69,23 +67,13 @@ class AgentOS(LaunchMixin, PersistenceMixin, WatcherMixin):
                 self._loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(self._loop)
 
-        self._bus = EventBus(self._loop)
-        self._bus.subscribe("run.dirty", lambda _payload: self._mark_dirty())
-        self._bus.subscribe("run.event", self._on_run_event)
-        self._dag_service = DagService(None, self.project_root, self._registry.runs)
+
+
 
         self._state_dir = os.path.join(PROJECT_ROOT, "state")
         os.makedirs(self._state_dir, exist_ok=True)
-        self._runs_file = os.path.join(self._state_dir, "runs.json")
 
-        self._goal_graph = GoalGraph(self)
-        self._supervisor_graph = SupervisorGraph(self)
-
-        self._agents: dict[str, Agent] = {}
-        load_runs_from_disk(self)
-        self._sync_agents()
-        self._save_lock = threading.Lock()
-        self._save_dirty = False
+        load_agents_from_disk(self)
         self._save_task = threading.Thread(
             target=self._periodic_save_worker, daemon=True, name="persist-worker"
         )
@@ -94,68 +82,61 @@ class AgentOS(LaunchMixin, PersistenceMixin, WatcherMixin):
         self._idle_timeout_sec = 20 * 60
         self._timeout_task = self._loop.create_task(self._timeout_watcher())
 
-    @property
-    def runs(self) -> dict:
-        return self._registry.runs
+    # region 持久化
 
-    @property
-    def spawn_requests(self) -> dict:
-        return self._registry.spawn_requests
+    def _periodic_save_worker(self):
+        import time as _time
+        while True:
+            _time.sleep(3.0)
+            try:
+                dirty = [a for a in self.agents.values() if a._dirty]
+                if not dirty:
+                    continue
+                for a in dirty:
+                    a._dirty = False
+                save_agents_to_disk(self)
+                logger.info(f"persist: saved {len(self.agents)} agents ({len(dirty)} dirty)")
+            except Exception as e:
+                logger.warning(f"persist worker error: {e}")
 
-    def _sync_agents(self) -> None:
-        for run_id, ri in self._registry.runs.items():
-            if run_id not in self._agents:
-                self._agents[run_id] = Agent.for_run(ri, self)
+    # ---- 超时看护 ----
 
-    def _get_agent(self, run_id: str) -> Agent | None:
-        ri = self._registry.runs.get(run_id)
-        if not ri:
-            return None
-        agent = self._agents.get(run_id)
-        if not agent:
-            agent = Agent.for_run(ri, self)
-            self._agents[run_id] = agent
-        return agent
-
-    def _start_reader(self, run_id: str) -> None:
-        agent = self._get_agent(run_id)
-        if agent:
-            agent.start_reader()
-
-    def on_run_completed(self, run_info: RunInfo) -> None:
-        agent = self._get_agent(run_info.run_id)
-        if agent:
-            agent.on_completed()
+    async def _timeout_watcher(self):
+        while True:
+            await asyncio.sleep(30.0)
+            try:
+                now = datetime.now()
+                for agent in list(self.agents.values()):
+                    if agent.status != RunStatus.RUNNING or not agent.idle_timeout_enabled():
+                        continue
+                    last_ts = self._last_activity_ts(agent)
+                    idle_sec = (now - last_ts).total_seconds()
+                    if idle_sec > self._idle_timeout_sec:
+                        logger.warning(f"[{agent.agent_id[:8]}] idle {idle_sec:.0f}s, force-completing")
+                        agent.add_event("error", text=f"[Agent OS] Auto-ended: idle for {int(idle_sec)}s")
+                        agent.on_user_done()
+            except Exception as e:
+                logger.warning(f"timeout watcher error: {e}")
 
     @staticmethod
-    def _sanitize_unicode(text: str) -> str:
-        return text.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
+    def _last_activity_ts(agent) -> datetime:
+        events = list(agent.output_events)
+        if events:
+            try:
+                return datetime.fromisoformat(events[-1].get("ts", agent.started_at.isoformat()))
+            except Exception:
+                pass
+        return agent.started_at
 
-    def _get_parent(self, parent_run_id: str | None):
-        if parent_run_id and parent_run_id in self._registry.runs:
-            return self._registry.runs[parent_run_id]
+    # ---- 索引 ----
+
+    def _get_agent(self, agent_id: str) -> Agent | None:
+        return self.agents.get(agent_id)
+
+    def _get_parent(self, parent_id: str | None) -> Agent | None:
+        if parent_id and parent_id in self.agents:
+            return self.agents[parent_id]
         return None
-
-    def _notify_frontend(self, run_id: str) -> None:
-        self._bus.publish("run.event", run_id=run_id)
-
-    def _notify_and_save(self, run_id: str) -> None:
-        self._bus.publish("run.event", run_id=run_id)
-        self._mark_dirty()
-
-    def _transition(self, run_info: RunInfo, to_status: RunStatus) -> None:
-        from_status = run_info.status
-        if from_status == to_status:
-            return
-        if not RunStateMachine.can_transition(from_status.value, to_status.value):
-            logger.warning(
-                f"[{run_info.run_id[:8]}] transition {from_status.value} -> {to_status.value} "
-                f"not in valid set (allowing for compatibility)"
-            )
-        run_info.status = to_status
-        if to_status in (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.STOPPED):
-            run_info.completed_at = datetime.now()
-        self._mark_dirty()
 
     def list_models(self, refresh: bool = False) -> list[str]:
         if self._models_cache is not None and not refresh:
@@ -164,172 +145,292 @@ class AgentOS(LaunchMixin, PersistenceMixin, WatcherMixin):
         self._models_cache = models
         return models
 
-    def start_run(self, prompt: str, agent_name: str | None = None,
-                  parent_run_id: str | None = None,
-                  env_extras: dict | None = None,
-                  interactive: bool = False,
-                  system_prompt: str | None = None,
-                  model: str | None = None,
-                  task_type: str = "generative",
-                  goal: str | None = None,
-                  supervisor: str | None = None,
-                  workspace_name: str | None = None) -> str:
-        config = self._prepare_launch(prompt, parent_run_id, interactive, env_extras,
-                                       system_prompt, model, workspace_name, goal)
-        handle = self._launch_process(config)
-        if isinstance(handle, dict):
-            return handle
-        return self._finalize_start(config, handle, parent_run_id, task_type, goal, supervisor)
+    def start_agent(self, prompt: str, agent_name: str | None = None,
+                    parent_id: str | None = None,
+                    env_extras: dict | None = None,
+                    interactive: bool = False,
+                    system_prompt: str | None = None,
+                    model: str | None = None,
+                    task_type: str = "generative",
+                    goal: str | None = None,
+                    supervisor: str | None = None,
+                    workspace_name: str | None = None) -> str:
+        import uuid as _uuid
+        prompt = Agent._sanitize_unicode(prompt)
+        if system_prompt:
+            system_prompt = Agent._sanitize_unicode(system_prompt)
+        agent_id = _uuid.uuid4().hex[:10]
+        session_id = str(_uuid.uuid4())
+        if model is None:
+            model = self.default_model
+        env = build_agent_env(agent_id, self.project_root, self.port, workspace_name, env_extras)
+        if env_extras:
+            env.update(env_extras)
+        if not parent_id and not system_prompt:
+            system_prompt = RootAgent._make_system_prompt(
+                env.get("AGENT_OS_WORKSPACE", ".agent_os/workspaces/<agent>/"))
 
-    # ---- 薄委托 ----
+        parent = self._get_parent(parent_id)
+        depth = (parent.depth or 0) + 1 if parent else 0
 
-    def spawn_children(self, parent_run_id, parent_session_id, tasks, wait_strategy="all"):
-        agent = self._get_agent(parent_run_id)
+        agent = Agent.for_run(
+            backend=self._backend, project_root=self.project_root,
+            agent_id=agent_id, prompt=prompt, session_id=session_id,
+            parent_id=parent_id, interactive=interactive,
+            model=model, task_type=task_type,
+            workspace_path=env.get("AGENT_OS_WORKSPACE"),
+            step_id=(env_extras or {}).get("AGENT_OS_STEP_ID") if env_extras else None,
+            system_prompt=system_prompt, goal=goal, supervisor=supervisor,
+        )
+        agent.depth = depth
+        agent._on_step_done = self._on_agent_step_done
+        agent._on_step_start = self._on_agent_step_start
+        if parent:
+            agent.parent = parent
+            parent.children.append(agent)
+        self.agents[agent_id] = agent
+
+        marker_path = os.path.join(self.project_root, ".agent_os_agent_id")
+        try:
+            with open(marker_path, "w") as f:
+                f.write(agent_id)
+        except Exception:
+            pass
+
+        agent.initialize(prompt, model)
+        return agent_id
+
+    # region 薄委托
+
+    def spawn_children(self, parent_id, parent_session_id, tasks, wait_strategy="all"):
+        agent = self._get_agent(parent_id)
         if not agent:
-            return {"spawn_id": "", "child_count": 0, "child_run_ids": [], "error": "parent not found"}
+            return {"child_count": 0, "child_ids": [], "error": "parent not found"}
         return agent.spawn_children(tasks, parent_session_id, wait_strategy)
 
-    def complete_interactive(self, run_id: str) -> bool:
-        ri = self._registry.runs.get(run_id)
-        if not ri or ri.status != RunStatus.RUNNING:
-            return False
-        agent = self._get_agent(run_id)
-        if not agent:
+    def complete_interactive(self, agent_id: str) -> bool:
+        agent = self._get_agent(agent_id)
+        if not agent or agent.status != RunStatus.RUNNING:
             return False
         agent.on_user_done()
         return True
 
-    def report_complete(self, run_id, result):
-        agent = self._get_agent(run_id)
+    def report_complete(self, agent_id, result):
+        agent = self._get_agent(agent_id)
         return agent.on_report(result) if agent else False
 
-    def approve_plan(self, run_id, feedback="", model=None):
-        agent = self._get_agent(run_id)
+    def approve_plan(self, agent_id, feedback="", model=None):
+        agent = self._get_agent(agent_id)
         return agent.approve_plan(feedback, model) if agent else False
 
-    def reject_plan(self, run_id, feedback="", model=None):
-        agent = self._get_agent(run_id)
+    def reject_plan(self, agent_id, feedback="", model=None):
+        agent = self._get_agent(agent_id)
         return agent.reject_plan(feedback, model) if agent else False
 
-    def continue_run(self, run_id, prompt, source="user", model=None, goal=None):
-        agent = self._get_agent(run_id)
+    def continue_agent(self, agent_id, prompt, source="user", model=None, goal=None):
+        agent = self._get_agent(agent_id)
         return agent.resume(prompt, source, model, goal) if agent else False
 
-    def stop_run(self, run_id):
-        agent = self._get_agent(run_id)
+    def stop_agent(self, agent_id):
+        agent = self._get_agent(agent_id)
         return agent.stop() if agent else False
 
-    def handle_send(self, run_id, msg):
-        agent = self._get_agent(run_id)
+    def handle_send(self, agent_id, msg):
+        agent = self._get_agent(agent_id)
         return agent.on_send(msg) if agent else False
 
-    def rewind_to(self, run_id, target_seq):
-        agent = self._get_agent(run_id)
-        return agent.rewind_to(target_seq) if agent else {"ok": False, "error": "run not found"}
+    def rewind_to(self, agent_id, target_ts):
+        agent = self._get_agent(agent_id)
+        return agent.rewind_to(target_ts) if agent else {"ok": False, "error": "agent not found"}
 
-    def clear_context(self, run_id):
-        agent = self._get_agent(run_id)
-        return agent.clear_context() if agent else {"ok": False, "error": "run not found"}
+    def clear_context(self, agent_id):
+        agent = self._get_agent(agent_id)
+        return agent.clear_context() if agent else {"ok": False, "error": "agent not found"}
 
-    def set_goal(self, run_id, goal, max_retries=None):
-        agent = self._get_agent(run_id)
+    def set_goal(self, agent_id, goal, max_retries=None):
+        agent = self._get_agent(agent_id)
         return agent.set_goal(goal, max_retries) if agent else False
 
-    def skip_goal(self, run_id):
-        agent = self._get_agent(run_id)
+    def skip_goal(self, agent_id):
+        agent = self._get_agent(agent_id)
         return agent.skip_goal() if agent else False
 
     # ---- 管理 & DAG ----
 
-    def delete_run(self, run_id: str, recursive: bool = True) -> int:
-        run_info = self._registry.runs.get(run_id)
-        if not run_info:
+    def delete_agent(self, agent_id: str, recursive: bool = True) -> int:
+        agent = self.agents.get(agent_id)
+        if not agent:
             return 0
         deleted = 0
         if recursive:
-            for child_id in list(run_info.children_run_ids):
-                deleted += self.delete_run(child_id, recursive=True)
-        if run_info.status == RunStatus.RUNNING and run_info._session:
-            try:
-                run_info._session.terminate()
-            except Exception:
-                pass
-        if run_info.parent_run_id:
-            parent = self._registry.runs.get(run_info.parent_run_id)
-            if parent and run_id in parent.children_run_ids:
-                parent.children_run_ids.remove(run_id)
-        for sr in list(self._registry.spawn_requests.values()):
-            if run_id in sr.child_run_ids:
-                try:
-                    sr.child_run_ids.remove(run_id)
-                except ValueError:
-                    pass
-            sr.completed_children.discard(run_id)
+            for child_id in list(agent.children_ids):
+                deleted += self.delete_agent(child_id, recursive=True)
+        if agent.status == RunStatus.RUNNING:
+            agent.terminate()
+        if agent.parent_id:
+            parent = self.agents.get(agent.parent_id)
+            if parent:
+                parent.children = [c for c in parent.children if c.agent_id != agent_id]
         try:
             conn = getattr(self, '_db_conn', None)
             if conn:
-                conn.execute("DELETE FROM runs WHERE run_id=?", (run_id,))
+                conn.execute("DELETE FROM agents WHERE agent_id=?", (agent_id,))
                 conn.commit()
         except Exception:
             pass
-        del self._registry.runs[run_id]
-        self._agents.pop(run_id, None)
+        del self.agents[agent_id]
         return deleted + 1
 
-    def dag_checkout(self, run_id, step_id, rerun_downstream=False):
-        result = self._dag_service.dag_checkout(run_id, step_id, rerun_downstream)
-        if not result.get("ok"):
-            return result
-        ws = self._dag_service._resolve_workspace(run_id)
-        if ws:
-            to_remove = [rid for rid, ri in self._registry.runs.items()
-                         if ri.workspace_path == ws and ri.parent_run_id is not None]
-            for rid in to_remove:
-                self.delete_run(rid, recursive=False)
-        self._mark_dirty()
-        return result
+    def _on_agent_step_done(self, workspace_path: str, step_id: str):
+        try:
+            dag = dp.load_dag(workspace_path)
+            if dp.mark_done(dag.get("steps", []), step_id):
+                dp.save_dag(workspace_path, dag)
+        except Exception:
+            pass
 
-    def dag_status_by_workspace(self, workspace_id):
-        return self._dag_service.dag_status_by_workspace(workspace_id)
+    def _on_agent_step_start(self, workspace_path: str, step_id: str):
+        try:
+            dag = dp.load_dag(workspace_path)
+            if dp.mark_running(dag.get("steps", []), step_id):
+                dp.save_dag(workspace_path, dag)
+        except Exception:
+            pass
 
-    def dag_status(self, run_id):
-        return self._dag_service.dag_status(run_id)
+    def start_dag(self, workspace_path: str) -> list[str]:
+        """从 dag.json 启动所有就绪的 step 作为子 agent。"""
+        dag = dp.load_dag(workspace_path)
+        ready = dp.ready_steps(dag.get("steps", []))
+        if not ready:
+            return []
+        by_id = {s["id"]: s for s in dag["steps"]}
+        ids = []
+        for step_id in ready:
+            step = by_id[step_id]
+            agent_id = self.start_agent(
+                prompt=step.get("prompt", ""),
+                workspace_name=os.path.basename(workspace_path),
+                env_extras={"AGENT_OS_STEP_ID": step_id},
+                task_type=step.get("type", "generative"),
+                goal=step.get("goal"),
+                model=step.get("model"),
+            )
+            dp.mark_running(dag["steps"], step_id)
+            ids.append(agent_id)
+        dp.save_dag(workspace_path, dag)
+        return ids
+
+    def dag_status(self, agent_id: str) -> dict:
+        agent = self.agents.get(agent_id)
+        if not agent or not agent.workspace_path:
+            return {"ok": False, "error": "agent not found or no workspace"}
+        try:
+            dag = dp.load_dag(agent.workspace_path)
+            steps = dag.get("steps", [])
+            order = dp.topo_order(steps) if steps else []
+            by_id = {s["id"]: s for s in steps}
+            return {"ok": True, "steps": [
+                {"id": sid, "name": by_id[sid].get("name", ""),
+                 "status": by_id[sid].get("status", "pending"),
+                 "depends_on": by_id[sid].get("depends_on", []),
+                 "prompt": by_id[sid].get("prompt", "")[:200]}
+                for sid in order
+            ]}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def dag_status_by_workspace(self, workspace_id: str) -> dict:
+        """通过 workspace 名称查找 dag 状态（用于 Dashboard 预览）。"""
+        for agent in self.agents.values():
+            if not agent.workspace_path:
+                continue
+            ws_name = os.path.basename(agent.workspace_path.rstrip("/\\"))
+            if ws_name == workspace_id:
+                return self.dag_status(agent.agent_id)
+        # 回退：直接从文件系统读
+        ws_path = os.path.join(self.project_root, "workspaces", workspace_id)
+        if os.path.isdir(ws_path):
+            try:
+                dag = dp.load_dag(ws_path)
+                steps = dag.get("steps", [])
+                return {"ok": True, "steps": [
+                    {"id": s["id"], "name": s.get("name", ""),
+                     "status": s.get("status", "pending"),
+                     "depends_on": s.get("depends_on", []),
+                     "prompt": s.get("prompt", "")[:200]}
+                    for s in steps
+                ]}
+            except Exception as e:
+                return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": "workspace not found"}
+
+    def dag_checkout(self, agent_id: str, step_id: str, rerun_downstream: bool = False) -> dict:
+        """重置某个 step 状态为 pending，可选重置下游。"""
+        agent = self.agents.get(agent_id)
+        if not agent or not agent.workspace_path:
+            return {"ok": False, "error": "agent not found or no workspace"}
+        try:
+            dag = dp.load_dag(agent.workspace_path)
+            steps = dag.get("steps", [])
+            ids_to_reset = [step_id]
+            if rerun_downstream:
+                descendants = dp.get_descendants(steps, step_id)
+                ids_to_reset = descendants
+            hit = dp.reset_steps(steps, ids_to_reset)
+            if not hit:
+                return {"ok": False, "error": f"step {step_id} not found"}
+            dp.save_dag(agent.workspace_path, dag)
+            return {"ok": True, "step_id": step_id, "reset": hit}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
 
     def clear_completed(self) -> int:
-        roots = [ri for ri in self._registry.runs.values()
-                 if not ri.parent_run_id and ri.status in (
+        roots = [agent for agent in self.agents.values()
+                 if not agent.parent_id and agent.status in (
                      RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.STOPPED)]
         count = 0
-        for r in roots:
-            if self.delete_run(r.run_id, recursive=True) > 0:
+        for a in roots:
+            if self.delete_agent(a.agent_id, recursive=True) > 0:
                 count += 1
         return count
 
-    def list_runs(self):
-        return self._registry.list_runs()
+    # ---- 树查询 ----
 
-    def get_tree(self):
-        return self._registry.get_tree()
+    def list_agents(self) -> list[dict]:
+        return [agent.to_summary() for agent in self.agents.values()]
 
-    def get_run(self, run_id: str) -> RunInfo | None:
-        return self._registry.get(run_id)
+    def get_tree(self) -> list[dict]:
+        return [agent.to_tree_node() for agent in self.agents.values() if not agent.parent_id]
 
-    async def stream_output(self, run_id: str) -> AsyncGenerator[str, None]:
-        run_info = self._registry.runs.get(run_id)
-        if not run_info:
+    @staticmethod
+    def unwrap_task_prompt(prompt: str, system_prompt: str = "") -> str:
+        if system_prompt:
+            m = re.search(r'## Task\n([\s\S]+?)(?=\n## |\Z)', system_prompt)
+            if m:
+                task = m.group(1).strip()
+                if task:
+                    return task
+        m = re.search(r'\[Your Task\]\n?([\s\S]*?)\n?\[/Your Task\]', prompt)
+        if m:
+            return m.group(1).strip()
+        clean = re.sub(r'\[Agent OS Communication Protocol[\s\S]*?\[/Agent OS Communication Protocol\]\s*', '', prompt)
+        clean = re.sub(r'\[Mandatory Closing Step\][\s\S]*?\[/Mandatory Closing Step\]', '', clean).strip()
+        return clean.split('\n')[0].strip() or prompt[:80]
+
+    def get_agent(self, agent_id: str) -> Agent | None:
+        return self.agents.get(agent_id)
+
+    async def stream_output(self, agent_id: str) -> AsyncGenerator[str, None]:
+        agent = self.agents.get(agent_id)
+        if not agent:
             return
-        cursor = 0
+        loop = asyncio.get_event_loop()
         while True:
-            events = list(run_info.output_events)
-            while cursor < len(events):
-                yield _json.dumps(events[cursor], ensure_ascii=False)
-                cursor += 1
-            if run_info.status != RunStatus.RUNNING:
-                break
-            run_info._new_output_event.clear()
             try:
-                await asyncio.get_event_loop().run_in_executor(
-                    None, run_info._new_output_event.wait, 1.0
+                event = await asyncio.wait_for(
+                    loop.run_in_executor(None, agent._event_queue.get), timeout=1.0
                 )
+                yield _json.dumps(event, ensure_ascii=False)
             except asyncio.TimeoutError:
-                continue
+                if agent.status != RunStatus.RUNNING:
+                    break

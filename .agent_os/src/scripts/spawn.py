@@ -16,13 +16,10 @@ spawn.py — Agent 调用此脚本通知 OS 派发子 agent。
               （默认不 poll，立即退出，由 OS 通过 resume 机制唤醒父 agent）
     --timeout 轮询超时秒数（默认 600，仅 --poll 模式生效）
 
-OS 通过环境变量自动管理 parent_run_id 和 port，agent 无需关心。
+OS 通过环境变量自动管理 parent_agent_id 和 port，agent 无需关心。
 脚本行为：
-    - 默认模式：POST 到 OS /api/spawn，打印确认，立即退出。OS 在子 agent
-      全部完成后自动 --resume 唤醒父 agent。
-    - --poll 模式：POST 后轮询 /api/run/{id} 等待子 agent 完成，完成后
-      打印子 agent 结果摘要并退出。父 agent 不需要 resume。
 """
+
 import argparse
 import json
 import os
@@ -32,15 +29,15 @@ import urllib.request
 import urllib.error
 
 
-def _get_parent_run_id(cli_parent: str = "") -> str:
-    """获取 parent_run_id：CLI arg > env var > marker file。"""
+def _get_parent_agent_id(cli_parent: str = "") -> str:
+    """获取 parent_agent_id：CLI arg > env var > marker file。"""
     if cli_parent:
         return cli_parent
-    run_id = os.environ.get("AGENT_OS_RUN_ID", "")
-    if run_id:
-        return run_id
+    agent_id = os.environ.get("AGENT_OS_AGENT_ID", "")
+    if agent_id:
+        return agent_id
     # Fallback: marker file
-    marker = os.path.join(os.getcwd(), ".agent_os_run_id")
+    marker = os.path.join(os.getcwd(), ".agent_os_agent_id")
     if os.path.exists(marker):
         with open(marker, "r") as f:
             return f.read().strip()
@@ -67,7 +64,7 @@ def _poll_children(port: int, child_ids: list, timeout: int) -> str:
         for cid in child_ids:
             if cid in results:
                 continue
-            info = _api_get(port, f"/api/run/{cid}")
+            info = _api_get(port, f"/api/agent/{cid}")
             status = info.get("status", "unknown")
             if status in ("completed", "failed", "stopped"):
                 results[cid] = {
@@ -115,7 +112,7 @@ def main():
                         help="Block and poll until children complete, print results")
     parser.add_argument("--timeout", type=int, default=600,
                         help="Poll timeout in seconds (default: 600)")
-    parser.add_argument("--parent", default="", help="Parent run_id (auto-detected if not provided)")
+    parser.add_argument("--parent", default="", help="Parent agent_id (auto-detected if not provided)")
     parser.add_argument("--port", type=int, default=int(os.environ.get("AGENT_OS_PORT", "8420")),
                         help="OS Dashboard port")
     args = parser.parse_args()
@@ -130,9 +127,9 @@ def main():
         print(f"[ERROR] Invalid JSON in --tasks: {e}", file=sys.stderr)
         sys.exit(1)
 
-    parent_run_id = _get_parent_run_id(args.parent)
-    if not parent_run_id:
-        print("[ERROR] Cannot determine parent_run_id (env AGENT_OS_RUN_ID not set, no marker file)", file=sys.stderr)
+    parent_agent_id = _get_parent_agent_id(args.parent)
+    if not parent_agent_id:
+        print("[ERROR] Cannot determine parent_agent_id (env AGENT_OS_AGENT_ID not set, no marker file)", file=sys.stderr)
         sys.exit(1)
 
     parent_session_id = os.environ.get("AGENT_OS_SESSION_ID", "")
@@ -141,7 +138,7 @@ def main():
     payload = {
         "tasks": tasks,
         "wait_strategy": args.wait,
-        "parent_run_id": parent_run_id,
+        "parent_id": parent_agent_id,
         "parent_session_id": parent_session_id,
     }
 
@@ -167,7 +164,7 @@ def main():
     # Output confirmation
     spawn_id = result.get("spawn_id", "?")
     child_count = result.get("child_count", len(tasks))
-    child_ids = result.get("child_run_ids", [])
+    child_ids = result.get("child_ids", [])
 
     print(f"[Agent OS] Spawned {child_count} sub-agent(s). Spawn ID: {spawn_id}")
     print(f"[Agent OS] Child IDs: {child_ids}")
@@ -176,10 +173,30 @@ def main():
         print(f"[Agent OS] Polling for completion (timeout={args.timeout}s)...")
         summary = _poll_children(args.port, child_ids, args.timeout)
         print(summary)
-    else:
-        print(f"[Agent OS] Strategy: wait={args.wait}")
-        print(f"[Agent OS] OS will resume you when {'all' if args.wait == 'all' else 'any'} sub-agent(s) complete.")
-        print(f"[Agent OS] You can now exit. Your session will be resumed automatically.")
+
+    # 如果指定了 --poll，子 agent 完成后自动 report
+    if args.poll and child_ids:
+        all_results = []
+        for cid in child_ids:
+            info = _api_get(args.port, f"/api/agent/{cid}")
+            all_results.append({
+                "agent_id": cid[:8],
+                "status": info.get("status", "unknown"),
+                "result": info.get("reported_result") or "(无)",
+            })
+        result_text = json.dumps(all_results, ensure_ascii=False)
+        report_payload = {"agent_id": parent_agent_id, "result": result_text}
+        report_data = json.dumps(report_payload).encode("utf-8")
+        report_req = urllib.request.Request(
+            f"http://127.0.0.1:{args.port}/api/agent/{parent_agent_id}/report",
+            data=report_data,
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            urllib.request.urlopen(report_req, timeout=5)
+            print(f"[Agent OS] Auto-reported results to OS.")
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

@@ -1,12 +1,12 @@
 """CodeBuddySDKBackend — 通过 codebuddy-agent-sdk 启动 agent。"""
 import asyncio
+import dataclasses
 import json as _json
 import logging
 import os
 import threading
 
-from .sdk_base import SDKBackend
-from .session_handle import SDKHandle
+from .backend import SDKBackend, SDKHandle
 from .cli_resolver import parse_models_from_cli_inner
 
 logger = logging.getLogger("agent_os")
@@ -97,7 +97,6 @@ class CodeBuddySDKBackend(SDKBackend):
             AssistantMessage, SystemMessage, ResultMessage, StreamEvent,
             UserMessage, TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock,
         )
-        import dataclasses
 
         try:
             async for msg in query(prompt=prompt, options=opts):

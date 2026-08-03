@@ -2,7 +2,7 @@
 import json, os, sys, urllib.request
 
 PORT = os.environ.get("AGENT_OS_PORT", "8420")
-RUN_ID = os.environ.get("AGENT_OS_RUN_ID", "")
+AGENT_ID = os.environ.get("AGENT_OS_AGENT_ID", "")
 BASE = f"http://127.0.0.1:{PORT}"
 
 
@@ -21,8 +21,8 @@ def main():
 
     try:
         req = urllib.request.Request(
-            f"{BASE}/api/run/{RUN_ID}/report",
-            data=json.dumps({"result": result}).encode(),
+            f"{BASE}/api/agent/{AGENT_ID}/report",
+            data=json.dumps({"agent_id": AGENT_ID, "result": result}).encode(),
             headers={"Content-Type": "application/json"},
             method="POST",
         )

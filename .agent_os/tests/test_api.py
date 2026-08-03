@@ -1,14 +1,6 @@
-"""P1 测试：FastAPI 路由层（dashboard/app.py）。
+"""FastAPI 路由层测试。
 
-由于 dashboard/app.py 使用 `from ..src.agent_os import ...` 相对导入，
-测试时需要先把整个包结构注入到 sys.modules，再 import app。
-涵盖：
-  - GET /api/runs     — 返回 {"runs": [...]}
-  - GET /api/run/{id} — 已存在 200，不存在 404
-  - POST /api/run     — 缺少 prompt 返回 422
-  - GET /api/models   — 返回 {"models": [...]}
-  - GET /api/dag/templates — 返回 {"templates": [...]}
-  - GET /api/workspaces — 返回 {"workspaces": [...]}
+由于 dashboard/app.py 使用相对导入，测试时需要先把整个包结构注入到 sys.modules。
 """
 import sys
 import os
@@ -16,12 +8,10 @@ import types
 from unittest.mock import MagicMock
 import pytest
 
-# ---- 路径 ----
 AGENT_OS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 
 def _build_package_in_sys_modules():
-    """把 .agent_os/ 目录作为 agent_os 包注入 sys.modules（只做一次）。"""
     if "agent_os" in sys.modules and isinstance(sys.modules["agent_os"], types.ModuleType):
         return
 
@@ -44,6 +34,30 @@ def _build_package_in_sys_modules():
     dash_pkg.__path__ = [os.path.join(AGENT_OS_DIR, "dashboard")]
     dash_pkg.__package__ = "agent_os.dashboard"
     sys.modules["agent_os.dashboard"] = dash_pkg
+
+    src_pkg = types.ModuleType("agent_os.src")
+    src_pkg.__path__ = [os.path.join(AGENT_OS_DIR, "src")]
+    src_pkg.__package__ = "agent_os.src"
+    sys.modules["agent_os.src"] = src_pkg
+
+    mock_utils = types.ModuleType("agent_os.src.utils")
+    mock_utils.safe_run = MagicMock(return_value=MagicMock(returncode=0, stdout="", stderr=""))
+    sys.modules["agent_os.src.utils"] = mock_utils
+
+    mock_src_core = types.ModuleType("agent_os.src.core")
+    mock_src_core.__path__ = [os.path.join(AGENT_OS_DIR, "src", "core")]
+    mock_src_core.__package__ = "agent_os.src.core"
+    sys.modules["agent_os.src.core"] = mock_src_core
+
+    mock_src_core_agent_os = types.ModuleType("agent_os.src.core.agent_os")
+    mock_src_core_agent_os.AgentOS = MagicMock
+    sys.modules["agent_os.src.core.agent_os"] = mock_src_core_agent_os
+
+    mock_git = types.ModuleType("agent_os.dashboard.git_utils")
+    mock_git.get_git_branches = MagicMock(return_value=[])
+    mock_git.get_current_branch = MagicMock(return_value="main")
+    mock_git.git_checkout_with_stash = MagicMock(return_value=(True, ""))
+    sys.modules["agent_os.dashboard.git_utils"] = mock_git
 
 
 _build_package_in_sys_modules()
@@ -70,18 +84,14 @@ app = _app_mod.app
 from fastapi.testclient import TestClient  # noqa: E402
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
 @pytest.fixture(scope="module")
 def mock_pm():
     m = MagicMock()
-    m.runs = {}
-    # 给需要序列化的方法返回可 JSON 化的值
-    m.list_runs.return_value = []
+    m.agents = {}
+    m.list_agents.return_value = []
     m.list_models.return_value = []
     m.get_workspace_path = MagicMock(return_value=None)
+    m.MAX_GOAL_RETRIES = 5
     _app_mod.set_agent_os(m)
     return m
 
@@ -91,84 +101,84 @@ def client():
     return TestClient(app)
 
 
-# ---------------------------------------------------------------------------
-# GET /api/runs  →  {"runs": [...]}
-# ---------------------------------------------------------------------------
+# -------------------------------------------------------
+# GET /api/agents  →  {"agents": [...]}
+# -------------------------------------------------------
 
-class TestListRuns:
-    def test_empty_runs_returns_dict_with_runs_key(self, client, mock_pm):
-        mock_pm.runs = {}
-        mock_pm.list_runs.return_value = []
-        resp = client.get("/api/runs")
+class TestListAgents:
+    def test_empty_agents_returns_list(self, client, mock_pm):
+        mock_pm.agents = {}
+        mock_pm.list_agents.return_value = []
+        resp = client.get("/api/agents")
         assert resp.status_code == 200
         body = resp.json()
-        assert "runs" in body
-        assert isinstance(body["runs"], list)
+        assert "agents" in body
+        assert isinstance(body["agents"], list)
 
 
-# ---------------------------------------------------------------------------
-# GET /api/run/{run_id}
-# ---------------------------------------------------------------------------
+# -------------------------------------------------------
+# GET /api/agent/{agent_id}
+# -------------------------------------------------------
 
-class TestGetRun:
-    def test_missing_run_returns_404(self, client, mock_pm):
-        # get_run 返回 None 触发 404 分支
-        mock_pm.get_run.return_value = None
-        resp = client.get("/api/run/nonexistent-xyz")
+class TestGetAgent:
+    def test_missing_agent_returns_404(self, client, mock_pm):
+        mock_pm.get_agent.return_value = None
+        resp = client.get("/api/agent/nonexistent")
         assert resp.status_code == 404
 
-    def test_existing_run_returns_200(self, client, mock_pm):
-        pytest.skip("pre-existing API 500 error — AgentOS init issue")
-        run = MagicMock()
-        run.run_id = "r1"
-        run.status.value = "completed"
-        run.prompt = "test"
-        run.model = None
-        run.session_id = None
-        run.started_at.isoformat.return_value = "2024-01-01T00:00:00"
-        run.completed_at = None
-        run.parent_run_id = None
-        run.children_run_ids = []
-        run.step_id = None
-        run.task_type = "generative"
-        run.reported_result = "done"
-        run.goal = None
-        run.goal_retries = 0
-        run.exit_code = None
-        run.interactive = False
-        run.user_terminated = False
-        run.system_prompt = None
-        run.output_events = []
-        run.turn_markers = []
-        run.messages = []
-        run.workspace_path = None
-        mock_pm.get_run.return_value = run
-        mock_pm.MAX_GOAL_RETRIES = 3  # 必须是可 JSON 序列化的整型
-        resp = client.get("/api/run/r1")
+    def test_existing_agent_returns_200(self, client, mock_pm):
+        agent = MagicMock()
+        agent.agent_id = "a1"
+        agent.status.value = "completed"
+        agent.prompt = "test"
+        agent.model = None
+        agent.session_id = None
+        agent.started_at.isoformat.return_value = "2024-01-01T00:00:00"
+        agent.completed_at = None
+        agent.parent_id = None
+        agent.children_ids = []
+        agent.task_type = "generative"
+        agent.reported_result = "done"
+        agent.goal = None
+        agent.goal_retries = 0
+        agent.max_goal_retries = None
+        agent.exit_code = None
+        agent.interactive = False
+        agent.user_terminated = False
+        agent.system_prompt = None
+        agent.output_events = []
+        agent.turn_markers = []
+        agent.messages = []
+        agent.workspace_path = None
+        agent.label = None
+        agent.plan_content = None
+        agent.plan_file = None
+        mock_pm.get_agent.return_value = agent
+        resp = client.get("/api/agent/a1")
         assert resp.status_code == 200
-        mock_pm.get_run.return_value = None
+        mock_pm.get_agent.return_value = None
 
 
-# ---------------------------------------------------------------------------
-# POST /api/run — 请求体校验（422 由 Pydantic 校验触发，不依赖 pm）
-# ---------------------------------------------------------------------------
+# -------------------------------------------------------
+# POST /api/agent — 请求体校验
+# -------------------------------------------------------
 
-class TestStartRun:
+class TestStartAgent:
     def test_missing_prompt_returns_422(self, client):
-        resp = client.post("/api/run", json={})
+        resp = client.post("/api/agent", json={})
         assert resp.status_code == 422
 
     def test_missing_prompt_with_other_fields_returns_422(self, client):
-        resp = client.post("/api/run", json={"model": "claude-3"})
+        resp = client.post("/api/agent", json={"model": "claude-3"})
         assert resp.status_code == 422
 
 
-# ---------------------------------------------------------------------------
+# -------------------------------------------------------
 # GET /api/models  →  {"models": [...]}
-# ---------------------------------------------------------------------------
+# -------------------------------------------------------
 
 class TestListModels:
-    def test_returns_dict_with_models_key(self, client, mock_pm):
+    def test_returns_models_list(self, client, mock_pm):
         mock_pm.list_models.return_value = []
         resp = client.get("/api/models")
         assert resp.status_code == 200
@@ -177,12 +187,12 @@ class TestListModels:
         assert isinstance(body["models"], list)
 
 
-# ---------------------------------------------------------------------------
+# -------------------------------------------------------
 # GET /api/dag/templates  →  {"templates": [...]}
-# ---------------------------------------------------------------------------
+# -------------------------------------------------------
 
 class TestDagTemplates:
-    def test_returns_dict_with_templates_key(self, client):
+    def test_returns_templates_list(self, client):
         resp = client.get("/api/dag/templates")
         assert resp.status_code == 200
         body = resp.json()
@@ -190,12 +200,12 @@ class TestDagTemplates:
         assert isinstance(body["templates"], list)
 
 
-# ---------------------------------------------------------------------------
+# -------------------------------------------------------
 # GET /api/workspaces  →  {"workspaces": [...]}
-# ---------------------------------------------------------------------------
+# -------------------------------------------------------
 
 class TestListWorkspaces:
-    def test_returns_dict_with_workspaces_key(self, client):
+    def test_returns_workspaces_list(self, client):
         resp = client.get("/api/workspaces")
         assert resp.status_code == 200
         body = resp.json()

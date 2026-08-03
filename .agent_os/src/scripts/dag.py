@@ -46,8 +46,8 @@ import json
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ..core import dag_planner as dp  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core.dag import planner as dp  # noqa: E402
 
 
 def _workspace() -> str:

@@ -12,10 +12,10 @@ from mcp.server.fastmcp import FastMCP
 
 logger = logging.getLogger("agent_os.mcp")
 
-# 从环境变量获取 OS 端口和当前 run_id
+# 从环境变量获取 OS 端口和当前 agent_id
 OS_PORT = int(os.environ.get("AGENT_OS_PORT", "8420"))
-OS_RUN_ID = os.environ.get("AGENT_OS_RUN_ID", "")
-OS_PARENT_RUN_ID = os.environ.get("AGENT_OS_PARENT_RUN_ID", "")
+OS_AGENT_ID = os.environ.get("AGENT_OS_AGENT_ID", "")
+OS_PARENT_AGENT_ID = os.environ.get("AGENT_OS_PARENT_AGENT_ID", "")
 OS_BASE_URL = f"http://127.0.0.1:{OS_PORT}"
 
 mcp = FastMCP(
@@ -57,18 +57,18 @@ def os_spawn(
         wait_strategy: 等待策略，"all"(全部完成) 或 "any"(任一完成)
 
     Returns:
-        包含 spawn_id 和 child_run_ids 的 JSON 字符串。
+        包含 child_ids 的 JSON 字符串。
     """
     try:
         tasks_list = json.loads(tasks) if isinstance(tasks, str) else tasks
     except json.JSONDecodeError:
         return json.dumps({"error": f"Invalid JSON tasks: {tasks[:100]}"})
 
-    parent_run_id = OS_RUN_ID
+    parent_agent_id = OS_AGENT_ID
     parent_session_id = os.environ.get("AGENT_OS_SESSION_ID", "")
 
     payload = {
-        "parent_run_id": parent_run_id,
+        "parent_id": parent_agent_id,
         "parent_session_id": parent_session_id,
         "tasks": tasks_list,
         "wait_strategy": wait_strategy,
@@ -87,11 +87,11 @@ def os_report(result: str) -> str:
     Returns:
         确认信息。
     """
-    if not OS_RUN_ID:
-        return json.dumps({"error": "AGENT_OS_RUN_ID not set"})
+    if not OS_AGENT_ID:
+        return json.dumps({"error": "AGENT_OS_AGENT_ID not set"})
 
-    payload = {"run_id": OS_RUN_ID, "result": result}
-    resp = _post(f"/api/run/{OS_RUN_ID}/report", payload)
+    payload = {"agent_id": OS_AGENT_ID, "result": result}
+    resp = _post(f"/api/agent/{OS_AGENT_ID}/report", payload)
     return json.dumps(resp, ensure_ascii=False)
 
 
@@ -105,11 +105,11 @@ def os_send(msg: str) -> str:
     Returns:
         确认信息。
     """
-    if not OS_RUN_ID:
-        return json.dumps({"error": "AGENT_OS_RUN_ID not set"})
+    if not OS_AGENT_ID:
+        return json.dumps({"error": "AGENT_OS_AGENT_ID not set"})
 
-    payload = {"run_id": OS_RUN_ID, "msg": msg}
-    resp = _post(f"/api/run/{OS_RUN_ID}/send", payload)
+    payload = {"agent_id": OS_AGENT_ID, "msg": msg}
+    resp = _post(f"/api/agent/{OS_AGENT_ID}/send", payload)
     return json.dumps(resp, ensure_ascii=False)
 
 
