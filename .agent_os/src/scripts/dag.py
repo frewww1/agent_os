@@ -49,6 +49,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # 直接导入 planner 子模块，避免触发 core/__init__.py 中的 AgentOS 依赖链
 import importlib
+import importlib.util
 _dp_spec = importlib.util.spec_from_file_location(
     "core.dag.planner",
     os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
