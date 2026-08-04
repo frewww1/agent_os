@@ -365,6 +365,11 @@ class Agent(BaseModel):
         # 处理 goal/supervisor agent 的 verdict
         if isinstance(child, GoalAgent):
             self._handle_goal_verdict(child, child_result)
+            # goal 评估完成 → 检查是否存在 supervisor，有则 resume 它
+            for c in self.children:
+                if isinstance(c, SupervisorAgent) and c.status == RunStatus.RUNNING:
+                    c.resume("请继续审查。", source="os")
+                    return
         elif isinstance(child, SupervisorAgent):
             self._handle_supervisor_verdict(child_result)
 
@@ -379,6 +384,10 @@ class Agent(BaseModel):
 
     def _handle_goal_verdict(self, goal_agent: "Agent", result: str | None) -> None:
         if not result:
+            # 空结果 = goal agent 未能评估，自动跳过（视为通过）
+            self.add_event("system", text="[Agent OS] Goal agent produced no verdict, auto-skipping")
+            self.goal = None
+            self.goal_retries = 0
             return
         is_met = result.strip().upper().startswith("YES")
         if not is_met:
