@@ -379,8 +379,11 @@ class Agent(BaseModel):
                         f"{len(self.children) - done} still pending")
             return
 
-        logger.info(f"[{self.agent_id[:8]}] all {len(self.children)} children done, resuming")
-        self._resume_from_children()
+        logger.info(f"[{self.agent_id[:8]}] all {len(self.children)} children done")
+        if self.parent:
+            self.parent.notify_child_completed(self, self.reported_result or self.fallback_result)
+        else:
+            self._resume_from_children()
 
     def _handle_goal_verdict(self, goal_agent: "Agent", result: str | None) -> None:
         if not result:
