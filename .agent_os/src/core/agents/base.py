@@ -102,6 +102,7 @@ class Agent(BaseModel):
         self._project_root = project_root
         self._on_step_done = data.pop("_on_step_done", None)
         self._on_step_start = data.pop("_on_step_start", None)
+        self._on_child_created = data.pop("_on_child_created", None)
         self._session = None
         self.parent: Agent | None = None
         self.children: list[Agent] = []
@@ -226,6 +227,8 @@ class Agent(BaseModel):
             "agent_id": self.agent_id,
             "prompt": self.prompt[:120] if self.prompt else "",
             "goal": self.goal or "", "goal_retries": self.goal_retries,
+            "max_goal_retries": self.max_goal_retries,
+            "supervisor": self.supervisor or "",
             "label": self.label, "status": self.status.value,
             "session_id": self.session_id,
             "started_at": self.started_at.isoformat(),
@@ -233,6 +236,7 @@ class Agent(BaseModel):
             "events": list(self.output_events), "turns": len(self.turn_markers),
             "interactive": self.interactive, "task_type": self.task_type,
             "model": self.model, "is_root": self.parent_id is None,
+            "step_id": self.step_id,
             "workspace_path": self.workspace_path, "children": children_nodes,
         }
 
@@ -297,6 +301,9 @@ class Agent(BaseModel):
         child.depth = (self.depth or 0) + 1
         child._on_step_done = self._on_step_done
         child._on_step_start = self._on_step_start
+        child._on_child_created = self._on_child_created
+        if self._on_child_created:
+            self._on_child_created(child)
         self.children.append(child)
         return child
 
@@ -511,7 +518,17 @@ class Agent(BaseModel):
     MAX_GOAL_RETRIES: ClassVar[int] = 5
 
     def on_completed(self) -> None:
-        """完成时检查：有活跃的 goal/supervisor 子 agent 就 resume 它们，没有则通知父 agent。"""
+        """完成时检查：有 goal/supervisor 就先评估，没有则通知父 agent。"""
+        from .goal import GoalAgent
+        from .supervisor import SupervisorAgent
+
+        # 首次完成时创建 goal agent（之前 set_goal 时上下文为空无法创建）
+        if self.goal and not any(isinstance(c, GoalAgent) for c in self.children):
+            self._spawn_goal_agent()
+        # 首次完成时创建 supervisor agent
+        if self.supervisor and not any(isinstance(c, SupervisorAgent) for c in self.children):
+            self._spawn_supervisor_agent()
+
         for child in self.children:
             if isinstance(child, GoalAgent):
                 child._start_new_session()
@@ -534,12 +551,11 @@ class Agent(BaseModel):
     # ----------------------------------------------------------------
 
     def set_goal(self, goal: str, max_retries: int | None = None) -> bool:
-        """设置 goal 并立即创建 GoalAgent 子 agent。"""
+        """设置 goal，在 agent 完成时自动创建 GoalAgent 评估。"""
         self.goal = goal
         self.goal_retries = 0
         if max_retries is not None:
             self.max_goal_retries = max_retries
-        self._spawn_goal_agent()
         return True
 
     def _spawn_goal_agent(self) -> None:
@@ -570,9 +586,8 @@ class Agent(BaseModel):
     # ----------------------------------------------------------------
 
     def set_supervisor(self, supervisor_prompt: str) -> bool:
-        """设置 supervisor 并立即创建 SupervisorAgent 子 agent。"""
+        """设置 supervisor，在 agent 完成时自动创建 SupervisorAgent 审查。"""
         self.supervisor = supervisor_prompt
-        self._spawn_supervisor_agent()
         return True
 
     def _spawn_supervisor_agent(self) -> None:
@@ -591,7 +606,7 @@ class Agent(BaseModel):
             f"验证产出是否满足：\n{self.supervisor}\n\n"
             f"PASS → report.py\nCORRECTION → send.py\nDo NOT report after correction."
         )
-        child = self._make_child(sup_prompt, sup_sys, "generative", agent_cls=SupervisorAgent)
+        child = self._make_child(sup_prompt, sup_sys, "supervisor", agent_cls=SupervisorAgent)
         child.initialize(sup_prompt, self.model)
 
     # ----------------------------------------------------------------

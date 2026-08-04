@@ -1,6 +1,6 @@
 {
   "name": "code_review",
-  "description": "代码审查流水线：编码 → 审查 → 修复",
+  "description": "代码审查流水线（含 Goal + Supervisor + 动态步骤）：编码 → 审查 → 修复 → 测试",
   "steps": [
     {
       "id": "coding",
@@ -9,25 +9,31 @@
       "depends_on": [],
       "agent_name": null,
       "model": null,
-      "type": "generative"
+      "type": "generative",
+      "goal": "代码文件已创建在 workspace 中，内容符合用户需求",
+      "supervisor": "验证：1) 源文件确实存在于 workspace 2) 代码内容与用户需求匹配 3) 代码可读且无语法错误。全部满足回复 PASS，有问题回复 CORRECTION: <具体问题>"
     },
     {
       "id": "review",
       "name": "代码审查",
-      "prompt": "审查 workspace 下的代码，输出 review.md 包含：代码质量、潜在问题、改进建议。",
+      "prompt": "审查 workspace 下的代码，输出 review.md 包含：代码质量评分、潜在问题列表、改进建议。",
       "depends_on": ["coding"],
       "agent_name": null,
       "model": null,
-      "type": "generative"
+      "type": "generative",
+      "goal": "review.md 已创建，包含代码质量评分、问题列表和改进建议",
+      "supervisor": "验证：1) review.md 存在 2) 包含代码质量评分 3) 列出具体问题 4) 给出改进建议。全部满足回复 PASS。"
     },
     {
       "id": "fix",
       "name": "修复问题",
-      "prompt": "根据 review.md 的审查意见修复代码问题。修复后更新 review.md 标注已修复项。",
+      "prompt": "根据 review.md 的审查意见修复代码问题。修复后更新 review.md 在底部标注修复状态。完成后用 report.py 汇报结果。",
       "depends_on": ["review"],
       "agent_name": null,
       "model": null,
-      "type": "generative"
+      "type": "generative",
+      "goal": "review.md 中列出的所有问题已修复，review.md 底部有修复状态标注",
+      "supervisor": "验证：1) review.md 底部有修复状态 2) 所有问题已标记为已修复 3) 如有代码改动，改动正确且未引入新问题。全部满足回复 PASS。"
     }
   ]
 }

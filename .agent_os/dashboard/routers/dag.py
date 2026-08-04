@@ -116,10 +116,11 @@ async def start_dag(req: DagStartRequest):
     )
     system_prompt = (
         f"你是 DAG 调度 agent。按模板顺序执行流水线：\n\n{steps_desc}\n\n"
+        f"dag.json 位置：$AGENT_OS_WORKSPACE/dag.json（环境变量已设好，dag.py --ready 自动读取）。\n\n"
         f"执行方式：\n"
         f"1. `python .agent_os/dag.py --ready` → 取就绪节点（JSON 数组，含 "
         f"id/prompt/type/goal/supervisor）\n"
-        f"2. 对每个就绪节点，用 spanwn.py 创建子 agent：\n"
+        f"2. 对每个就绪节点，用 spawn.py 创建子 agent：\n"
         f"   `python .agent_os/spawn.py --tasks '[{{\"prompt\":\"...\","
         f"\"type\":\"<interactive|generative>\",\"step_id\":\"<节点id>\","
         f"\"goal\":\"...\",\"supervisor\":\"...\"}}]'`\n"
