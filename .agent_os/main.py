@@ -70,9 +70,9 @@ def main():
                         help=f"Backend CLI command (default from config: {default_cli})")
     parser.add_argument("--backend", default=None,
                         help=f"Agent backend: native, codebuddy-sdk, sdk (default from config: {default_backend})")
-    parser.add_argument("--model", default=None,
-                        help="Default model for all agents (e.g. claude-sonnet-4.6, gpt-5.1). "
-                             "None = use CLI default. Can be overridden per-agent in Dashboard.")
+    parser.add_argument("--model", default="deepseek-v4-pro",
+                        help="Default model for all agents (default: deepseek-v4-pro). "
+                             "Can be overridden per-agent in Dashboard.")
     parser.add_argument("--root", default=None,
                         help="Working directory for the CLI process (default: current directory)")
     parser.add_argument("--no-browser", action="store_true", help="Don't auto-open browser")

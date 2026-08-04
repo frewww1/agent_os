@@ -24,6 +24,12 @@ class ContinueRequest(BaseModel):
     goal: str | None = None
 
 
+class QualityPolicyRequest(BaseModel):
+    goal: str | None = None
+    max_retries: int = 5
+    supervisor: str | None = None
+
+
 class DagStartRequest(BaseModel):
     template_id: str
     workspace_name: str

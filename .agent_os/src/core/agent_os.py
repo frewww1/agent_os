@@ -162,7 +162,7 @@ class AgentOS:
         agent_id = _uuid.uuid4().hex[:10]
         session_id = str(_uuid.uuid4())
         if model is None:
-            model = self.default_model
+            model = self.default_model or "deepseek-v4-pro"
         env = build_agent_env(agent_id, self.project_root, self.port, workspace_name, env_extras)
         if env_extras:
             env.update(env_extras)
@@ -185,6 +185,7 @@ class AgentOS:
         agent.depth = depth
         agent._on_step_done = self._on_agent_step_done
         agent._on_step_start = self._on_agent_step_start
+        agent._on_child_created = self._register_child
         if parent:
             agent.parent = parent
             parent.children.append(agent)
@@ -199,6 +200,10 @@ class AgentOS:
 
         agent.initialize(prompt, model)
         return agent_id
+
+    def _register_child(self, child):
+        """子 agent 创建回调 — 注册到 agents dict。"""
+        self.agents[child.agent_id] = child
 
     # region 薄委托
 
@@ -333,7 +338,10 @@ class AgentOS:
                 {"id": sid, "name": by_id[sid].get("name", ""),
                  "status": by_id[sid].get("status", "pending"),
                  "depends_on": by_id[sid].get("depends_on", []),
-                 "prompt": by_id[sid].get("prompt", "")[:200]}
+                 "prompt": by_id[sid].get("prompt", "")[:200],
+                 "goal": by_id[sid].get("goal"),
+                 "max_goal_retries": by_id[sid].get("max_goal_retries", 5),
+                 "supervisor": by_id[sid].get("supervisor")}
                 for sid in order
             ]}
         except Exception as e:
@@ -357,7 +365,9 @@ class AgentOS:
                     {"id": s["id"], "name": s.get("name", ""),
                      "status": s.get("status", "pending"),
                      "depends_on": s.get("depends_on", []),
-                     "prompt": s.get("prompt", "")[:200]}
+                     "prompt": s.get("prompt", "")[:200],
+                     "goal": s.get("goal"),
+                     "supervisor": s.get("supervisor")}
                     for s in steps
                 ]}
             except Exception as e:

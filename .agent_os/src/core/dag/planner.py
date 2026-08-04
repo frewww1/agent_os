@@ -13,7 +13,7 @@ dag.json 结构：
 """
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from graphlib import TopologicalSorter, CycleError
 
 DAG_FILENAME = "dag.json"
@@ -67,11 +67,11 @@ def topo_order(steps: list[dict]) -> list[str]:
             for node in ready:
                 ts.done(node)
     except CycleError:
-        raise ValueError(f"DAG has cycles! Unreachable steps detected.")
+        raise ValueError(f"DAG has cycles! Circular dependency detected among steps.")
 
     if len(order) != len(id_set):
         missing = id_set - set(order)
-        raise ValueError(f"DAG has cycles! Unreachable steps: {missing}")
+        raise ValueError(f"DAG has unreachable steps (missing or broken dependencies): {missing}")
     return order
 
 
@@ -188,7 +188,7 @@ def mark_running(steps: list[dict], step_id: str) -> bool:
     if s is None:
         return False
     s["status"] = "running"
-    s["started_at"] = datetime.now().isoformat()
+    s["started_at"] = datetime.now(timezone.utc).isoformat()
     s.pop("completed_at", None)
     return True
 
@@ -199,7 +199,7 @@ def mark_done(steps: list[dict], step_id: str) -> bool:
     if s is None:
         return False
     s["status"] = "done"
-    s["completed_at"] = datetime.now().isoformat()
+    s["completed_at"] = datetime.now(timezone.utc).isoformat()
     return True
 
 
@@ -209,7 +209,7 @@ def mark_failed(steps: list[dict], step_id: str) -> bool:
     if s is None:
         return False
     s["status"] = "failed"
-    s["completed_at"] = datetime.now().isoformat()
+    s["completed_at"] = datetime.now(timezone.utc).isoformat()
     return True
 
 

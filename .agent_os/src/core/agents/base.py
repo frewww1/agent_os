@@ -285,7 +285,8 @@ class Agent(BaseModel):
 
     def _make_child(self, prompt: str, system_prompt: str, task_type: str = "generative",
                     interactive: bool = False, goal: str | None = None,
-                    supervisor: str | None = None, agent_cls=None) -> "Agent":
+                    supervisor: str | None = None, step_id: str | None = None,
+                    agent_cls=None) -> "Agent":
         """创建子 agent 并建立父子链接。"""
         import uuid as _uuid
         child = (agent_cls or Agent)(backend=self._backend, project_root=self._project_root,
@@ -293,7 +294,7 @@ class Agent(BaseModel):
                                      session_id=str(_uuid.uuid4()),
                                      parent_id=self.agent_id,
                                      interactive=interactive, model=self.model,
-                                     task_type=task_type,
+                                     task_type=task_type, step_id=step_id,
                                      workspace_path=self.workspace_path,
                                      system_prompt=system_prompt,
                                      goal=goal, supervisor=supervisor)
@@ -342,7 +343,8 @@ class Agent(BaseModel):
             wrapped = f"[Agent OS] Execute: {task_hint}"
             child = self._make_child(wrapped, sub_sys, task_type,
                                      interactive=(task_type == "interactive"),
-                                     goal=child_goal, supervisor=child_supervisor)
+                                     goal=child_goal, supervisor=child_supervisor,
+                                     step_id=step_id)
             child.initialize(wrapped, child_model)
             child_ids.append(child.agent_id)
 

@@ -3,7 +3,7 @@ import logging
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from ..models import RunRequest, ContinueRequest, PlanDecisionRequest, LabelRequest, ReportRequest, SendMsgRequest
+from ..models import RunRequest, ContinueRequest, QualityPolicyRequest, PlanDecisionRequest, LabelRequest, ReportRequest, SendMsgRequest
 from .deps import get_agent_os
 
 router = APIRouter(prefix="/api", tags=["agent"])
@@ -105,6 +105,7 @@ async def get_agent(agent_id: str):
             "goal": agent.goal,
             "goal_retries": agent.goal_retries,
             "max_goal_retries": agent.max_goal_retries or agent_os.MAX_GOAL_RETRIES,
+            "supervisor": agent.supervisor,
             "plan_content": plan_content,
             "plan_file": plan_file,
         })
@@ -190,6 +191,34 @@ async def set_goal(agent_id: str, req: Request):
     if ok:
         return JSONResponse({"ok": True})
     return JSONResponse({"error": "agent not found"}, status_code=404)
+
+
+@router.post("/agent/{agent_id}/quality-policy")
+async def set_quality_policy(agent_id: str, req: QualityPolicyRequest):
+    """统一更新 Agent 的完成目标、评估预算和监督审查标准。"""
+    agent_os = get_agent_os()
+    if not agent_os:
+        return JSONResponse({"error": "not initialized"}, status_code=500)
+    agent = agent_os.get_agent(agent_id)
+    if not agent:
+        return JSONResponse({"error": "agent not found"}, status_code=404)
+    max_retries = max(1, min(int(req.max_retries), 99))
+    agent.set_goal((req.goal or "").strip(), max_retries=max_retries)
+    agent.supervisor = (req.supervisor or "").strip() or None
+    agent._dirty = True
+    agent.add_event(
+        "system",
+        text=("[Agent OS] Quality protocol updated: "
+              f"goal={'on' if agent.goal else 'off'}, "
+              f"supervisor={'on' if agent.supervisor else 'off'}, "
+              f"retry budget={max_retries}"),
+    )
+    return JSONResponse({
+        "ok": True,
+        "goal": agent.goal,
+        "supervisor": agent.supervisor,
+        "max_goal_retries": max_retries,
+    })
 
 
 @router.post("/agent/{agent_id}/skip-goal")
