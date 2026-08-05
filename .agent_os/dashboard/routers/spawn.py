@@ -3,25 +3,21 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from ..models import SpawnRequest
+from .deps import get_agent_os
 
 router = APIRouter(prefix="/api", tags=["spawn"])
 
 
-def get_pm():
-    from ..app import pm
-    return pm
-
-
 @router.post("/spawn")
 async def spawn_children(req: SpawnRequest):
-    pm = get_pm()
-    if not pm:
+    agent_os = get_agent_os()
+    if not agent_os:
         return JSONResponse({"error": "not initialized"}, status_code=500)
     tasks = [{"prompt": t.prompt, "agent_name": t.agent_name, "type": t.type,
               "model": t.model, "step_id": t.step_id,
               "goal": t.goal, "supervisor": t.supervisor} for t in req.tasks]
-    result = pm.spawn_children(
-        parent_run_id=req.parent_run_id, parent_session_id=req.parent_session_id,
+    result = agent_os.spawn_children(
+        parent_id=req.parent_id, parent_session_id=req.parent_session_id,
         tasks=tasks, wait_strategy=req.wait_strategy,
     )
     return JSONResponse(result)
@@ -29,10 +25,10 @@ async def spawn_children(req: SpawnRequest):
 
 @router.get("/tree")
 async def get_tree(workspace_id: str = ""):
-    pm = get_pm()
-    if not pm:
+    agent_os = get_agent_os()
+    if not agent_os:
         return JSONResponse({"tree": []})
-    tree = pm.get_tree()
+    tree = agent_os.get_tree()
     if workspace_id:
         tree = _filter_tree_by_workspace(tree, workspace_id)
     return JSONResponse({"tree": tree})

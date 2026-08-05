@@ -1,0 +1,19 @@
+{
+  "source_id": "sample_001",
+  "title": "iPhone 15 Pro 透明防摔手机壳 磁吸无线充电",
+  "category": "手机配件/手机壳",
+  "price": 199,
+  "currency": "TWD",
+  "images": ["https://example.com/phone_case.jpg"],
+  "attributes": {
+    "品牌": "无品牌",
+    "材质": "TPU+PC",
+    "颜色": "透明",
+    "适用机型": "iPhone 15 Pro",
+    "功能": "防摔、磁吸、无线充电"
+  },
+  "variants": [
+    {"sku": "IP15P-TR", "color": "透明", "stock": 200},
+    {"sku": "IP15P-BK", "color": "黑色", "stock": 150}
+  ]
+}

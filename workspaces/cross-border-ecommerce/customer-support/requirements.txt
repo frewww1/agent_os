@@ -1,0 +1,9 @@
+# customer-support 模块依赖
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+openai>=1.0.0
+httpx>=0.25.0
+redis>=5.0.0
+sentence-transformers>=2.2.0   # FAQ 语义匹配
+faiss-cpu>=1.7.0               # 向量检索（知识库）
+langchain>=0.1.0               # 可选：对话链管理

@@ -21,14 +21,14 @@ def main():
     parser.add_argument("--port", type=int, default=int(os.environ.get("AGENT_OS_PORT", "8420")))
     args = parser.parse_args()
 
-    run_id = os.environ.get("AGENT_OS_RUN_ID", "")
-    if not run_id:
-        print("[Agent OS] Warning: AGENT_OS_RUN_ID not set", file=sys.stderr)
+    agent_id = os.environ.get("AGENT_OS_AGENT_ID", "")
+    if not agent_id:
+        print("[Agent OS] Warning: AGENT_OS_AGENT_ID not set", file=sys.stderr)
 
-    payload = {"run_id": run_id, "msg": args.msg}
+    payload = {"agent_id": agent_id, "msg": args.msg}
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
-        f"http://127.0.0.1:{args.port}/api/run/{run_id}/send",
+        f"http://127.0.0.1:{args.port}/api/agent/{agent_id}/send",
         data=data,
         headers={"Content-Type": "application/json"},
     )

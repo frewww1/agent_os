@@ -3,12 +3,12 @@
 被 CodeBuddy CLI 的 PreToolUse hook 调用，stdin 接收 JSON 输入：
     {"tool_name": "Task", "tool_input": {"prompt": "...", "subagent_type": "...", ...}}
 
-读取 OS 端口和 run_id 从环境变量，HTTP POST 到 /api/spawn。
+读取 OS 端口和 agent_id 从环境变量，HTTP POST 到 /api/spawn。
 """
 import json, os, sys, urllib.request, urllib.error
 
 PORT = os.environ.get("AGENT_OS_PORT", "8420")
-RUN_ID = os.environ.get("AGENT_OS_RUN_ID", "")
+AGENT_ID = os.environ.get("AGENT_OS_AGENT_ID", "")
 BASE = f"http://127.0.0.1:{PORT}"
 
 
@@ -37,7 +37,7 @@ def main():
     payload = {
         "tasks": [task],
         "wait_strategy": "all",
-        "parent_run_id": RUN_ID,
+        "parent_id": AGENT_ID,
     }
 
     try:
@@ -64,7 +64,7 @@ def main():
         return
 
     # 阻止 CodeBuddy 自己创建子 agent，由 OS 接管
-    child_ids = result.get("child_run_ids", [])
+    child_ids = result.get("child_ids", [])
     print(json.dumps({
         "decision": "block",
         "reason": f"OS spawned {len(child_ids)} sub-agent(s): {', '.join(c[:8] for c in child_ids)}",

@@ -1,54 +1,51 @@
-"""Run API 路由 — /api/run/*"""
+"""Agent API 路由 — /api/agent/*"""
+import logging
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from ..models import RunRequest, ContinueRequest, PlanDecisionRequest, LabelRequest, ReportRequest, SendMsgRequest
+from ..models import RunRequest, ContinueRequest, QualityPolicyRequest, PlanDecisionRequest, LabelRequest, ReportRequest, SendMsgRequest
+from .deps import get_agent_os
 
-router = APIRouter(prefix="/api", tags=["run"])
-
-
-def get_pm():
-    """获取全局 ProcessManager。由 app.py 在初始化时注入。"""
-    from ..app import pm
-    return pm
+router = APIRouter(prefix="/api", tags=["agent"])
+logger = logging.getLogger("agent_os")
 
 
-@router.post("/run")
-async def start_run(req: RunRequest):
-    pm = get_pm()
-    if not pm:
+@router.post("/agent")
+async def start_agent(req: RunRequest):
+    agent_os = get_agent_os()
+    if not agent_os:
         return JSONResponse({"error": "not initialized"}, status_code=500)
     try:
-        run_id = pm.start_run(prompt=req.prompt, agent_name=req.agent_name,
+        agent_id = agent_os.start_agent(prompt=req.prompt, agent_name=req.agent_name,
                               model=req.model, workspace_name=req.workspace_name,
                               system_prompt=req.system_prompt,
                               task_type=req.task_type,
                               interactive=req.interactive,
                               goal=req.goal, supervisor=req.supervisor)
-        if req.max_goal_retries is not None and run_id:
-            pm.set_goal(run_id, req.goal or "", max_retries=req.max_goal_retries)
-        return JSONResponse({"run_id": run_id})
+        if req.max_goal_retries is not None and agent_id:
+            agent_os.set_goal(agent_id, req.goal or "", max_retries=req.max_goal_retries)
+        return JSONResponse({"agent_id": agent_id})
     except FileNotFoundError:
         return JSONResponse(
-            {"error": f"CLI command '{pm.cli_command}' not found."}, status_code=500)
+            {"error": f"CLI command '{agent_os.cli_command}' not found."}, status_code=500)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
-@router.get("/run/{run_id}/stream")
-async def stream_run(run_id: str):
-    pm = get_pm()
-    if not pm:
+@router.get("/agent/{agent_id}/stream")
+async def stream_agent(agent_id: str):
+    agent_os = get_agent_os()
+    if not agent_os:
         return JSONResponse({"error": "not initialized"}, status_code=500)
-    run_info = pm.get_run(run_id)
-    if not run_info:
-        return JSONResponse({"error": "run not found"}, status_code=404)
+    agent = agent_os.get_agent(agent_id)
+    if not agent:
+        return JSONResponse({"error": "agent not found"}, status_code=404)
 
     async def event_generator():
-        async for line in pm.stream_output(run_id):
+        async for line in agent_os.stream_output(agent_id):
             yield f"data: {line}\n\n"
-        run_info = pm.get_run(run_id)
-        status = run_info.status.value if run_info else "unknown"
+        agent = agent_os.get_agent(agent_id)
+        status = agent.status.value if agent else "unknown"
         yield f"event: done\ndata: {status}\n\n"
 
     return StreamingResponse(
@@ -58,27 +55,28 @@ async def stream_run(run_id: str):
     )
 
 
-@router.get("/runs")
-async def list_runs():
-    pm = get_pm()
-    if not pm:
-        return JSONResponse({"runs": []})
-    return JSONResponse({"runs": pm.list_runs()})
+@router.get("/agents")
+async def list_agents():
+    agent_os = get_agent_os()
+    if not agent_os:
+        return JSONResponse({"agents": []})
+    return JSONResponse({"agents": agent_os.list_agents()})
 
 
-@router.get("/run/{run_id}")
-async def get_run(run_id: str):
-    pm = get_pm()
-    if not pm:
+@router.get("/agent/{agent_id}")
+async def get_agent(agent_id: str):
+    agent_os = get_agent_os()
+    if not agent_os:
         return JSONResponse({"error": "not initialized"}, status_code=500)
-    run_info = pm.get_run(run_id)
-    if not run_info:
-        return JSONResponse({"error": "run not found"}, status_code=404)
+    agent = agent_os.get_agent(agent_id)
+    if not agent:
+        return JSONResponse({"error": "agent not found"}, status_code=404)
     try:
         plan_content = None
         plan_file = None
-        if run_info.status.value == "plan_pending":
-            plan_file = pm._find_latest_plan_file()
+        if agent.status.value == "plan_pending":
+            from ...src.core.agents import find_latest_plan_file
+            plan_file = find_latest_plan_file()
             if plan_file:
                 try:
                     with open(plan_file, "r", encoding="utf-8", errors="replace") as pf:
@@ -86,27 +84,28 @@ async def get_run(run_id: str):
                 except Exception:
                     pass
         return JSONResponse({
-            "run_id": run_info.run_id, "prompt": run_info.prompt,
-            "status": run_info.status.value, "session_id": run_info.session_id,
-            "parent_run_id": run_info.parent_run_id,
-            "children_run_ids": run_info.children_run_ids,
-            "started_at": run_info.started_at.isoformat(),
-            "completed_at": run_info.completed_at.isoformat() if run_info.completed_at else None,
-            "exit_code": run_info.exit_code,
-            "events": list(run_info.output_events),
-            "turns": len(run_info.turn_markers),
-            "messages": list(run_info.messages),
-            "reported_result": run_info.reported_result,
-            "interactive": run_info.interactive,
-            "task_type": run_info.task_type,
-            "model": run_info.model,
-            "user_terminated": run_info.user_terminated,
-            "label": run_info.label,
-            "workspace_files": _list_workspace_files(run_id),
-            "system_prompt": run_info.system_prompt,
-            "goal": run_info.goal,
-            "goal_retries": run_info.goal_retries,
-            "max_goal_retries": getattr(run_info, '_max_goal_retries', None) or pm.MAX_GOAL_RETRIES,
+            "agent_id": agent.agent_id, "prompt": agent.prompt,
+            "status": agent.status.value, "session_id": agent.session_id,
+            "parent_id": agent.parent_id,
+            "children_ids": agent.children_ids,
+            "started_at": agent.started_at.isoformat(),
+            "completed_at": agent.completed_at.isoformat() if agent.completed_at else None,
+            "exit_code": agent.exit_code,
+            "events": list(agent.output_events),
+            "turns": len(agent.turn_markers),
+            "messages": list(agent.messages),
+            "reported_result": agent.reported_result,
+            "interactive": agent.interactive,
+            "task_type": agent.task_type,
+            "model": agent.model,
+            "user_terminated": agent.user_terminated,
+            "label": agent.label,
+            "workspace_files": _list_workspace_files(agent_id),
+            "system_prompt": agent.system_prompt,
+            "goal": agent.goal,
+            "goal_retries": agent.goal_retries,
+            "max_goal_retries": agent.max_goal_retries or agent_os.MAX_GOAL_RETRIES,
+            "supervisor": agent.supervisor,
             "plan_content": plan_content,
             "plan_file": plan_file,
         })
@@ -115,10 +114,10 @@ async def get_run(run_id: str):
         return JSONResponse({"error": str(e), "traceback": traceback.format_exc()}, status_code=500)
 
 
-def _list_workspace_files(run_id: str) -> list[str]:
+def _list_workspace_files(agent_id: str) -> list[str]:
     from pathlib import Path
     from .workspace import _get_workspace_dir
-    workspace_dir = _get_workspace_dir(run_id)
+    workspace_dir = _get_workspace_dir(agent_id)
     if not workspace_dir.exists():
         return []
     files = []
@@ -130,52 +129,52 @@ def _list_workspace_files(run_id: str) -> list[str]:
     return files
 
 
-@router.post("/run/{run_id}/continue")
-async def continue_run(run_id: str, req: ContinueRequest):
-    pm = get_pm()
-    if not pm:
+@router.post("/agent/{agent_id}/continue")
+async def continue_agent(agent_id: str, req: ContinueRequest):
+    agent_os = get_agent_os()
+    if not agent_os:
         return JSONResponse({"error": "not initialized"}, status_code=500)
-    run_info = pm.get_run(run_id)
-    if not run_info:
-        return JSONResponse({"error": "run not found"}, status_code=404)
-    if not run_info.session_id:
+    agent = agent_os.get_agent(agent_id)
+    if not agent:
+        return JSONResponse({"error": "agent not found"}, status_code=404)
+    if not agent.session_id:
         return JSONResponse({"error": "no session_id, cannot continue"}, status_code=400)
     try:
-        success = pm.continue_run(run_id, prompt=req.prompt, model=req.model, goal=req.goal)
+        success = agent_os.continue_agent(agent_id, prompt=req.prompt, model=req.model, goal=req.goal)
         if success:
-            return JSONResponse({"ok": True, "run_id": run_id})
+            return JSONResponse({"ok": True, "agent_id": agent_id})
         else:
             return JSONResponse({"error": "cannot continue"}, status_code=400)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
-@router.post("/run/{run_id}/plan/approve")
-async def approve_plan(run_id: str, req: PlanDecisionRequest):
-    pm = get_pm()
-    if not pm:
+@router.post("/agent/{agent_id}/plan/approve")
+async def approve_plan(agent_id: str, req: PlanDecisionRequest):
+    agent_os = get_agent_os()
+    if not agent_os:
         return JSONResponse({"error": "not initialized"}, status_code=500)
-    success = pm.approve_plan(run_id, feedback=req.feedback, model=req.model)
+    success = agent_os.approve_plan(agent_id, feedback=req.feedback, model=req.model)
     if success:
-        return JSONResponse({"ok": True, "run_id": run_id})
+        return JSONResponse({"ok": True, "agent_id": agent_id})
     return JSONResponse({"error": "cannot approve"}, status_code=400)
 
 
-@router.post("/run/{run_id}/plan/reject")
-async def reject_plan(run_id: str, req: PlanDecisionRequest):
-    pm = get_pm()
-    if not pm:
+@router.post("/agent/{agent_id}/plan/reject")
+async def reject_plan(agent_id: str, req: PlanDecisionRequest):
+    agent_os = get_agent_os()
+    if not agent_os:
         return JSONResponse({"error": "not initialized"}, status_code=500)
-    success = pm.reject_plan(run_id, feedback=req.feedback, model=req.model)
+    success = agent_os.reject_plan(agent_id, feedback=req.feedback, model=req.model)
     if success:
-        return JSONResponse({"ok": True, "run_id": run_id})
+        return JSONResponse({"ok": True, "agent_id": agent_id})
     return JSONResponse({"error": "cannot reject"}, status_code=400)
 
 
-@router.post("/run/{run_id}/set-goal")
-async def set_goal(run_id: str, req: Request):
-    pm = get_pm()
-    if not pm:
+@router.post("/agent/{agent_id}/set-goal")
+async def set_goal(agent_id: str, req: Request):
+    agent_os = get_agent_os()
+    if not agent_os:
         return JSONResponse({"error": "not initialized"}, status_code=500)
     try:
         body = await req.json()
@@ -188,174 +187,169 @@ async def set_goal(run_id: str, req: Request):
             max_retries = int(max_retries)
         except (TypeError, ValueError):
             return JSONResponse({"error": "max_retries must be int"}, status_code=400)
-    ok = pm.set_goal(run_id, goal, max_retries=max_retries)
+    ok = agent_os.set_goal(agent_id, goal, max_retries=max_retries)
     if ok:
         return JSONResponse({"ok": True})
-    return JSONResponse({"error": "run not found"}, status_code=404)
+    return JSONResponse({"error": "agent not found"}, status_code=404)
 
 
-@router.post("/run/{run_id}/skip-goal")
-async def skip_goal(run_id: str):
-    pm = get_pm()
-    if not pm:
+@router.post("/agent/{agent_id}/quality-policy")
+async def set_quality_policy(agent_id: str, req: QualityPolicyRequest):
+    """统一更新 Agent 的完成目标、评估预算和监督审查标准。"""
+    agent_os = get_agent_os()
+    if not agent_os:
         return JSONResponse({"error": "not initialized"}, status_code=500)
-    ok = pm.skip_goal(run_id)
+    agent = agent_os.get_agent(agent_id)
+    if not agent:
+        return JSONResponse({"error": "agent not found"}, status_code=404)
+    max_retries = max(1, min(int(req.max_retries), 99))
+    agent.set_goal((req.goal or "").strip(), max_retries=max_retries)
+    agent.supervisor = (req.supervisor or "").strip() or None
+    agent._dirty = True
+    agent.add_event(
+        "system",
+        text=("[Agent OS] Quality protocol updated: "
+              f"goal={'on' if agent.goal else 'off'}, "
+              f"supervisor={'on' if agent.supervisor else 'off'}, "
+              f"retry budget={max_retries}"),
+    )
+    return JSONResponse({
+        "ok": True,
+        "goal": agent.goal,
+        "supervisor": agent.supervisor,
+        "max_goal_retries": max_retries,
+    })
+
+
+@router.post("/agent/{agent_id}/skip-goal")
+async def skip_goal(agent_id: str):
+    agent_os = get_agent_os()
+    if not agent_os:
+        return JSONResponse({"error": "not initialized"}, status_code=500)
+    ok = agent_os.skip_goal(agent_id)
     if ok:
         return JSONResponse({"ok": True})
-    return JSONResponse({"error": "run not found"}, status_code=404)
+    return JSONResponse({"error": "agent not found"}, status_code=404)
 
 
-@router.post("/run/{run_id}/set-max-goal-retries")
-async def set_max_goal_retries(run_id: str, req: Request):
-    """动态调整单个 run 的 goal 最大重试次数。"""
-    pm = get_pm()
-    if not pm:
+@router.post("/agent/{agent_id}/set-max-goal-retries")
+async def set_max_goal_retries(agent_id: str, req: Request):
+    """动态调整单个 agent 的 goal 最大重试次数。"""
+    agent_os = get_agent_os()
+    if not agent_os:
         return JSONResponse({"error": "not initialized"}, status_code=500)
     try:
         body = await req.json()
         max_retries = int(body.get("max_retries", 5))
     except Exception:
         return JSONResponse({"error": "invalid JSON or max_retries"}, status_code=400)
-    run_info = pm.get_run(run_id)
-    if not run_info:
-        return JSONResponse({"error": "run not found"}, status_code=404)
-    run_info._max_goal_retries = max_retries
+    agent = agent_os.get_agent(agent_id)
+    if not agent:
+        return JSONResponse({"error": "agent not found"}, status_code=404)
+    agent.max_goal_retries = max_retries
     return JSONResponse({"ok": True, "max_retries": max_retries})
 
 
-@router.post("/run/{run_id}/stop")
-async def stop_run(run_id: str):
-    pm = get_pm()
-    if not pm:
+@router.post("/agent/{agent_id}/stop")
+async def stop_agent(agent_id: str):
+    agent_os = get_agent_os()
+    if not agent_os:
         return JSONResponse({"error": "not initialized"}, status_code=500)
-    success = pm.stop_run(run_id)
+    success = agent_os.stop_agent(agent_id)
     if success:
         return JSONResponse({"ok": True})
     else:
         return JSONResponse({"error": "cannot stop"}, status_code=400)
 
 
-@router.delete("/run/{run_id}")
-async def delete_run(run_id: str):
-    pm = get_pm()
-    if not pm:
+@router.delete("/agent/{agent_id}")
+async def delete_agent(agent_id: str):
+    agent_os = get_agent_os()
+    if not agent_os:
         return JSONResponse({"error": "not initialized"}, status_code=500)
-    deleted = pm.delete_run(run_id, recursive=True)
+    deleted = agent_os.delete_agent(agent_id, recursive=True)
     return JSONResponse({"deleted": deleted})
 
 
-@router.post("/run/{run_id}/rewind")
-async def rewind_run(run_id: str, req: dict):
-    pm = get_pm()
-    if not pm:
+@router.post("/agent/{agent_id}/rewind")
+async def rewind_agent(agent_id: str, req: dict):
+    agent_os = get_agent_os()
+    if not agent_os:
         return JSONResponse({"error": "not initialized"}, status_code=500)
-    try:
-        target_seq = int(req.get("seq"))
-    except (TypeError, ValueError):
-        return JSONResponse({"error": "seq must be int"}, status_code=400)
-    result = pm.rewind_to(run_id, target_seq)
+    target_ts = req.get("ts", "")
+    if not target_ts:
+        return JSONResponse({"error": "ts is required"}, status_code=400)
+    result = agent_os.rewind_to(agent_id, target_ts)
     if not result.get("ok"):
         return JSONResponse({"error": result.get("error", "rewind failed")}, status_code=400)
     return JSONResponse(result)
 
 
-@router.post("/runs/clear")
-async def clear_runs():
-    pm = get_pm()
-    if not pm:
+@router.post("/agents/clear")
+async def clear_agents():
+    agent_os = get_agent_os()
+    if not agent_os:
         return JSONResponse({"error": "not initialized"}, status_code=500)
-    count = pm.clear_completed()
+    count = agent_os.clear_completed()
     return JSONResponse({"cleared": count})
 
 
-@router.post("/run/{run_id}/clear")
-async def clear_run_context(run_id: str):
-    pm = get_pm()
-    if not pm:
+@router.post("/agent/{agent_id}/clear")
+async def clear_agent_context(agent_id: str):
+    agent_os = get_agent_os()
+    if not agent_os:
         return JSONResponse({"error": "not initialized"}, status_code=500)
-    result = pm.clear_context(run_id)
+    result = agent_os.clear_context(agent_id)
     if result.get("ok"):
         return JSONResponse(result)
     return JSONResponse(result, status_code=400)
 
 
-@router.post("/run/{run_id}/complete")
-async def complete_interactive(run_id: str):
-    pm = get_pm()
-    if not pm:
+@router.post("/agent/{agent_id}/complete")
+async def complete_interactive(agent_id: str):
+    agent_os = get_agent_os()
+    if not agent_os:
         return JSONResponse({"error": "not initialized"}, status_code=500)
-    success = pm.complete_interactive(run_id)
+    success = agent_os.complete_interactive(agent_id)
     if success:
         return JSONResponse({"ok": True})
     else:
         return JSONResponse({"error": "cannot complete"}, status_code=400)
 
 
-@router.post("/run/{run_id}/send")
-async def send_message(run_id: str, req: SendMsgRequest):
-    pm = get_pm()
-    if not pm:
+@router.post("/agent/{agent_id}/send")
+async def send_message(agent_id: str, req: SendMsgRequest):
+    agent_os = get_agent_os()
+    if not agent_os:
         return JSONResponse({"error": "not initialized"}, status_code=500)
-    run_info = pm.get_run(run_id)
-    if not run_info:
-        return JSONResponse({"error": "run not found"}, status_code=404)
-    from datetime import datetime
-    import logging
-    logger = logging.getLogger("agent_os")
-    logger.info(f"[{run_id[:8]}] send_message received: {req.msg[:100]}")
-
-    run_info.messages.append({"time": datetime.now().isoformat(), "msg": req.msg})
-    run_info.add_event("send", text=req.msg)
-
-    # 如果 agent 正在等待 supervisor 审查，收到消息后 resume
-    waiting_sup_id = getattr(run_info, '_waiting_supervisor', None)
-    logger.info(f"[{run_id[:8]}] send_message: _waiting_supervisor={waiting_sup_id}, status={run_info.status.value}")
-    if waiting_sup_id:
-        msg_upper = req.msg.strip().upper()
-        if msg_upper.startswith("PASS"):
-            logger.info(f"[{run_id[:8]}] send_message: PASS, completing")
-            object.__setattr__(run_info, '_waiting_supervisor', None)
-            run_info.supervisor = None
-            run_info.add_text_line("[Agent OS] Supervisor: PASS — task complete", kind="system")
-            if pm:
-                pm._on_run_completed(run_info)
-                pm._mark_dirty()
-        elif msg_upper.startswith("CORRECTION"):
-            correction = req.msg.strip()
-            logger.info(f"[{run_id[:8]}] send_message: CORRECTION, calling continue_run")
-            object.__setattr__(run_info, '_waiting_supervisor', None)
-            run_info.add_text_line(f"[Agent OS] Supervisor correction: {correction[:200]}", kind="system")
-            if pm:
-                ok = pm.continue_run(run_id, correction, source="os")
-                logger.info(f"[{run_id[:8]}] continue_run result: {ok}")
-                pm._mark_dirty()
-    else:
-        logger.info(f"[{run_id[:8]}] send_message: no _waiting_supervisor, msg stored only")
-
+    if not agent_os.get_agent(agent_id):
+        return JSONResponse({"error": "agent not found"}, status_code=404)
+    logger.info(f"[{agent_id[:8]}] send_message received: {req.msg[:100]}")
+    agent_os.handle_send(agent_id, req.msg)
     return JSONResponse({"ok": True})
 
 
-@router.post("/run/{run_id}/report")
-async def report_result(run_id: str, req: ReportRequest):
-    pm = get_pm()
-    if not pm:
+@router.post("/agent/{agent_id}/report")
+async def report_result(agent_id: str, req: ReportRequest):
+    agent_os = get_agent_os()
+    if not agent_os:
         return JSONResponse({"error": "not initialized"}, status_code=500)
-    run_info = pm.get_run(run_id)
-    if not run_info:
-        return JSONResponse({"error": "run not found"}, status_code=404)
-    run_info.reported_result = req.result
-    pm.report_complete(run_id, req.result)
+    agent = agent_os.get_agent(agent_id)
+    if not agent:
+        return JSONResponse({"error": "agent not found"}, status_code=404)
+    agent.reported_result = req.result
+    agent_os.report_complete(agent_id, req.result)
     return JSONResponse({"ok": True})
 
 
-@router.post("/run/{run_id}/label")
-async def set_label(run_id: str, req: LabelRequest):
-    pm = get_pm()
-    if not pm:
+@router.post("/agent/{agent_id}/label")
+async def set_label(agent_id: str, req: LabelRequest):
+    agent_os = get_agent_os()
+    if not agent_os:
         return JSONResponse({"error": "not ready"}, status_code=503)
-    run_info = pm.get_run(run_id)
-    if not run_info:
-        return JSONResponse({"error": "run not found"}, status_code=404)
-    run_info.label = req.label.strip() or None
-    pm._mark_dirty()
+    agent = agent_os.get_agent(agent_id)
+    if not agent:
+        return JSONResponse({"error": "agent not found"}, status_code=404)
+    agent.label = req.label.strip() or None
+    agent._dirty = True
     return JSONResponse({"ok": True})

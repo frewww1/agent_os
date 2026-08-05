@@ -11,192 +11,282 @@
     <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.10.0/build/highlight.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/diff@5.2.0/dist/diff.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/fuse.js@7.0.0/dist/fuse.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.3/dist/cytoscape.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dagre@0.8.5/dist/dagre.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
 </head>
 <body>
-<div class="layout">
-    <!-- Sidebar: Agent Tree -->
-    <aside class="sidebar">
-        <div class="sidebar-header">
-            <h1>Agent OS</h1>
-            <div class="sidebar-actions">
-                <button class="btn-icon" title="启动 DAG 编排" onclick="toggleDagQuickstart()">🚀</button>
-                <button class="btn-icon" title="Clear completed runs (⌫)" onclick="clearCompleted()">⌫</button>
-                <button class="btn-new" onclick="newChat()">+ New</button>
+<div class="layout control-deck">
+    <aside class="sidebar navigator">
+        <div class="brand-block">
+            <div class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></div>
+            <div class="brand-copy">
+                <h1>Agent OS</h1>
+                <span>Multi-agent workspace</span>
             </div>
         </div>
+        <div class="nav-actions">
+            <button class="launch-btn" onclick="toggleDagQuickstart()"><span class="launch-icon">↗</span><span>Run workflow</span></button>
+            <button class="new-agent-btn" onclick="newChat()" title="新建 Agent">＋</button>
+        </div>
         <div class="sidebar-search" id="sidebarSearchWrap">
-            <input type="text" id="sidebarSearch" placeholder="Search agents…  ( / )" autocomplete="off" />
-            <button class="sidebar-search-clear" onclick="clearSidebarSearch()" title="Clear (Esc)">✕</button>
+            <input type="text" id="sidebarSearch" placeholder="Find workspace or agent" autocomplete="off" />
+            <span class="search-shortcut">/</span>
+            <button class="sidebar-search-clear" onclick="clearSidebarSearch()" title="Clear (Esc)">×</button>
+        </div>
+        <div class="nav-section-label">
+            <span>MISSIONS</span>
+            <div class="mission-filters">
+                <button id="recentMissionFilter" class="active" onclick="setMissionFilter('recent')">RECENT</button>
+                <button id="allMissionFilter" onclick="setMissionFilter('all')">ALL</button>
+                <button onclick="clearCompleted()" title="清理已完成任务">CLEAR</button>
+            </div>
         </div>
         <div class="tree-container" id="treeContainer"></div>
         <div class="sidebar-footer">
-            <span class="stats" id="sidebarStats">0 runs</span>
-            <span class="kbd-hint"><kbd>?</kbd> help</span>
+            <span class="system-online"><i></i> SYSTEM ONLINE</span>
+            <span class="stats" id="sidebarStats">0 agents</span>
+            <span class="kbd-hint"><kbd>?</kbd></span>
         </div>
     </aside>
 
-    <!-- Main Content -->
-    <main class="main">
+    <section class="mission-stage" id="missionStage">
+        <header class="stage-header">
+            <div class="stage-context">
+                <span class="stage-index">01</span>
+                <div>
+                    <span class="stage-eyebrow">Workspace</span>
+                    <h2 id="stageContextTitle">Select a task</h2>
+                </div>
+            </div>
+            <nav class="stage-switcher" aria-label="工作区视图">
+                <button id="topologyStageTab" class="active" onclick="setStageView('topology')">Topology</button>
+                <button id="filesStageTab" onclick="setStageView('files')">Artifacts</button>
+            </nav>
+            <div class="stage-clock"><span>LOCAL</span><strong id="stageClock">--:--:--</strong></div>
+            <button class="stage-close" onclick="closeMissionPanel()" title="关闭工作区">×</button>
+        </header>
+
+        <div class="stage-content">
+            <div class="stage-empty" id="orchestrationEmpty">
+                <div class="empty-orbit" aria-hidden="true"><i></i><i></i><i></i><b></b></div>
+                <span class="empty-kicker">READY WHEN YOU ARE</span>
+                <h3>Build, observe,<br>and refine.</h3>
+                <p>启动工作流或选择已有任务，在同一处查看 Agent 协作关系、执行进度和产出文件。</p>
+                <div class="empty-actions">
+                    <button class="primary" onclick="toggleDagQuickstart()">Run a workflow</button>
+                    <button onclick="newChat();document.getElementById('promptInput').focus()">Start one agent</button>
+                </div>
+            </div>
+
+            <section class="dag-panel" id="dagPanel" style="display:none">
+                <header class="dag-header">
+                    <div class="dag-heading">
+                        <span class="dag-mark" aria-hidden="true"></span>
+                        <div>
+                            <div class="dag-title">Live topology</div>
+                            <div class="dag-subtitle">任务路径与协作关系实时映射</div>
+                        </div>
+                    </div>
+                    <div class="graph-tabs" role="tablist" aria-label="图类型">
+                        <button class="graph-tab active" id="workflowGraphTab" role="tab" onclick="setGraphMode('workflow')">Workflow</button>
+                        <button class="graph-tab" id="agentGraphTab" role="tab" onclick="setGraphMode('agents')">Agent network</button>
+                    </div>
+                    <span class="dag-count" id="dagCount"></span>
+                    <div class="graph-actions">
+                        <button class="graph-action" onclick="fitGraph()">Frame all</button>
+                        <button class="graph-action" onclick="resetGraphZoom()">1:1</button>
+                        <button class="graph-action graph-collapse" onclick="toggleDag()" title="折叠"><span id="dagToggle">−</span></button>
+                    </div>
+                </header>
+                <div class="dag-body" id="dagBody">
+                    <div class="graph-summary" id="graphSummary"></div>
+                    <div class="graph-workbench">
+                        <div class="dag-graph" id="dagGraph">
+                            <div class="graph-empty" id="graphEmpty">
+                                <span class="graph-empty-mark"></span>
+                                <strong>Topology unavailable</strong>
+                                <span>当前任务还没有关系数据</span>
+                            </div>
+                        </div>
+                        <aside class="graph-inspector" id="graphInspector">
+                            <div class="inspector-kicker">SELECTED NODE</div>
+                            <div class="inspector-empty">选择拓扑节点，查看职责、状态以及上下游关系。</div>
+                        </aside>
+                    </div>
+                    <div class="dag-legend">
+                        <span class="dag-legend-label">SIGNAL</span>
+                        <span class="dag-legend-item"><span class="dag-legend-dot pending"></span>Queued</span>
+                        <span class="dag-legend-item"><span class="dag-legend-dot running"></span>Active</span>
+                        <span class="dag-legend-item"><span class="dag-legend-dot done"></span>Complete</span>
+                        <span class="dag-legend-item"><span class="dag-legend-dot failed"></span>Blocked</span>
+                        <span class="dag-legend-hint">SCROLL TO ZOOM · DRAG TO PAN · SELECT TO INSPECT</span>
+                    </div>
+                </div>
+            </section>
+
+            <section class="workspace-panel" id="workspacePanel" style="display:none">
+                <div class="workspace-header">
+                    <div><span class="workspace-kicker">MISSION ARTIFACTS</span><span class="workspace-title">Workspace</span></div>
+                    <span class="workspace-branch" id="workspaceBranch"></span>
+                    <span class="workspace-count" id="workspaceCount"></span>
+                    <button class="workspace-toggle" id="workspaceToggle" onclick="toggleWorkspace()">−</button>
+                </div>
+                <div class="workspace-body" id="workspaceBody">
+                    <div class="branch-section" id="branchSection" style="display:none">
+                        <div class="branch-section-header">
+                            <span class="branch-section-title">BRANCHES</span>
+                            <button class="btn-sm" onclick="showCreateBranch()">＋ NEW</button>
+                        </div>
+                        <div class="branch-list" id="branchList"></div>
+                        <div class="branch-create" id="branchCreate" style="display:none">
+                            <input type="text" id="newBranchName" placeholder="branch-name" />
+                            <button class="btn-sm" onclick="createBranch()">CREATE</button>
+                            <button class="btn-sm" onclick="hideCreateBranch()">CANCEL</button>
+                        </div>
+                    </div>
+                    <div class="workspace-files" id="workspaceFiles"><div class="workspace-empty">No artifacts yet</div></div>
+                    <div class="workspace-preview-empty" id="workspacePreviewEmpty">
+                        <div class="artifact-empty-mark"><i></i></div>
+                        <span>ARTIFACT VIEWER</span>
+                        <strong>Select a file to inspect</strong>
+                        <p>文件内容将在这里打开，不离开当前任务上下文。</p>
+                    </div>
+                    <div class="workspace-preview" id="workspacePreview" style="display:none">
+                        <div class="preview-header"><span class="preview-path" id="previewPath"></span><button class="preview-close" onclick="closePreview()">×</button></div>
+                        <pre class="preview-content" id="previewContent"></pre>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </section>
+
+    <main class="main agent-console">
         <header class="conv-header">
-            <div class="conv-title-wrap">
-                <div class="conv-title" id="convTitle" title="Click to rename">No agent selected</div>
-                <div class="conv-subtitle" id="convSubtitle"></div>
+            <div class="console-heading"><span class="console-index"></span><span>Agent console</span></div>
+            <div class="workspace-tools">
+                <button class="open-workspace-btn" onclick="openMissionPanel(graphMode)">
+                    <span class="workspace-btn-icon"><i></i><i></i><i></i></span>
+                    Open workspace
+                </button>
             </div>
             <span class="status-badge" id="headerStatusBadge" style="display:none"></span>
             <div class="conv-actions" id="convActions">
-                <button class="btn-icon" title="Export as Markdown" onclick="exportRun('md')">↓ md</button>
-                <button class="btn-icon" title="Export as JSON" onclick="exportRun('json')">↓ json</button>
+                <button class="btn-icon" title="Export Markdown" onclick="exportRun('md')">MD</button>
+                <button class="btn-icon" title="Export JSON" onclick="exportRun('json')">JSON</button>
+            </div>
+        </header>
+        <div class="agent-identity">
+            <div class="agent-avatar">A</div>
+            <div class="conv-title-wrap">
+                <div class="conv-title" id="convTitle" title="Click to rename">No agent selected</div>
+                <div class="conv-subtitle" id="convSubtitle">Select a mission node to inspect its execution stream</div>
             </div>
             <div class="conv-meta" id="convMeta"></div>
-        </header>
+        </div>
 
         <div class="output-area" id="outputArea">
             <div class="output-placeholder" id="placeholder">
-                <div class="placeholder-icon">◉</div>
-                <p>Start a Claude agent below.</p>
-                <p class="hint">Agents can spawn sub-agents. Each sub-agent talks to the parent only via <code>send.py</code> (progress) and <code>report.py</code> (final result). Press <kbd>?</kbd> for shortcuts.</p>
+                <div class="console-idle-mark"><i></i></div>
+                <p>Console standing by</p>
+                <p class="hint">选择左侧 Agent 后，这里会显示它的推理、工具调用、消息和最终产出。</p>
             </div>
             <div class="conv-stream" id="convStream"></div>
             <div class="mini-map" id="miniMap"></div>
-            <button id="jumpBtn" class="jump-btn" onclick="jumpToBottom()" style="display:none">↓ 跳转到底部 <span class="unread-count" id="unreadCount" style="display:none"></span></button>
-        </div>
-
-        <!-- DAG graph panel -->
-        <div class="dag-panel" id="dagPanel" style="display:none">
-            <div class="dag-header" onclick="toggleDag()">
-                <span class="dag-title">🔀 DAG 编排图</span>
-                <span class="dag-count" id="dagCount"></span>
-                <span class="dag-toggle" id="dagToggle">▾</span>
-            </div>
-            <div class="dag-body" id="dagBody">
-                <div class="dag-graph" id="dagGraph">
-                    <svg id="dagSvg" width="100%" height="100%"></svg>
-                </div>
-                <div class="dag-legend">
-                    <span class="dag-legend-item"><span class="dag-legend-dot pending"></span> pending</span>
-                    <span class="dag-legend-item"><span class="dag-legend-dot running"></span> running</span>
-                    <span class="dag-legend-item"><span class="dag-legend-dot done"></span> done</span>
-                    <span class="dag-legend-item"><span class="dag-legend-dot failed"></span> failed</span>
-                </div>
-            </div>
-        </div>
-
-        <!-- Workspace panel -->
-        <div class="workspace-panel" id="workspacePanel" style="display:none">
-            <div class="workspace-header" onclick="toggleWorkspace()">
-                <span class="workspace-title">📁 Workspace</span>
-                <span class="workspace-branch" id="workspaceBranch"></span>
-                <span class="workspace-count" id="workspaceCount"></span>
-                <span class="workspace-toggle" id="workspaceToggle">▾</span>
-            </div>
-            <div class="workspace-body" id="workspaceBody">
-                <!-- 分支管理区域 -->
-                <div class="branch-section" id="branchSection" style="display:none">
-                    <div class="branch-section-header">
-                        <span class="branch-section-title">🌿 分支</span>
-                        <button class="btn-sm" onclick="showCreateBranch()" title="从当前 commit 创建新分支">+ 新分支</button>
-                    </div>
-                    <div class="branch-list" id="branchList"></div>
-                    <div class="branch-create" id="branchCreate" style="display:none">
-                        <input type="text" id="newBranchName" placeholder="分支名" />
-                        <button class="btn-sm" onclick="createBranch()">创建</button>
-                        <button class="btn-sm" onclick="hideCreateBranch()">取消</button>
-                    </div>
-                </div>
-                <div class="workspace-files" id="workspaceFiles">
-                    <div class="workspace-empty">No files</div>
-                </div>
-                <div class="workspace-preview" id="workspacePreview" style="display:none">
-                    <div class="preview-header">
-                        <span class="preview-path" id="previewPath"></span>
-                        <button class="preview-close" onclick="closePreview()">✕</button>
-                    </div>
-                    <pre class="preview-content" id="previewContent"></pre>
-                </div>
-            </div>
+            <button id="jumpBtn" class="jump-btn" onclick="jumpToBottom()" style="display:none">↓ LATEST <span class="unread-count" id="unreadCount" style="display:none"></span></button>
         </div>
 
         <div class="input-area">
-            <div class="dag-quickstart" id="dagQuickstart" style="display:none">
-                <div class="dag-qs-header">
-                    <span class="dag-qs-title">🚀 快速启动 DAG 编排</span>
-                    <button class="dag-qs-close" onclick="toggleDagQuickstart()">✕</button>
-                </div>
-                <div class="dag-qs-body">
-                    <div class="dag-qs-row">
-                        <label>模式</label>
-                        <div class="dag-qs-mode">
-                            <label class="dag-qs-radio"><input type="radio" name="dagMode" value="new" checked onchange="onDagModeChange()"> 新建</label>
-                            <label class="dag-qs-radio"><input type="radio" name="dagMode" value="resume" onchange="onDagModeChange()"> 继续已有</label>
-                        </div>
-                    </div>
-                    <div id="dagNewRow1" class="dag-qs-row">
-                        <label>DAG 模板</label>
-                        <select id="dagTemplate" onchange="onDagTemplateChange()">
-                            <option value="">-- 选择模板 --</option>
-                        </select>
-                    </div>
-                    <div id="dagResumeRow1" class="dag-qs-row" style="display:none">
-                        <label>已有 Workspace</label>
-                        <select id="dagExistingWs" onchange="onDagExistingWsChange()">
-                            <option value="">-- 选择 workspace --</option>
-                        </select>
-                    </div>
-                    <div class="dag-qs-row">
-                        <label>任务名</label>
-                        <input type="text" id="dagWorkspace" placeholder="例如 my_project" value="" />
-                    </div>
-                    <div class="dag-qs-preview" id="dagQsPreview" style="display:none">
-                        <div class="dag-qs-preview-title">预览</div>
-                        <div class="dag-qs-preview-steps" id="dagQsSteps"></div>
-                    </div>
-                    <button class="dag-qs-run" onclick="runDagTemplate()">▶ 执行</button>
-                </div>
-            </div>
             <div class="input-wrap">
-                <textarea id="promptInput" placeholder="Message your agent…  (Ctrl+Enter to send,  / for commands)" rows="1"></textarea>
+                <textarea id="promptInput" placeholder="Direct the selected agent…" rows="1"></textarea>
                 <div class="input-toolbar">
-                    <label class="model-picker">
-                        <span class="model-picker-label">Model</span>
-                        <select id="modelSelect">
-                            <option value="">Default</option>
-                        </select>
-                    </label>
-                    <div class="goal-picker" id="goalPicker">
-                        <label class="goal-check-label">
-                            <input type="checkbox" id="goalCheck" onchange="onGoalToggle()">
-                            <span class="goal-picker-label">🎯 Goal</span>
-                        </label>
-                        <div class="goal-row" id="goalRow" style="display:none">
-                            <input class="goal-input" id="goalInput" placeholder="goal condition, e.g. all tests pass and coverage > 80%..." onblur="onGoalBlur()" onkeydown="if(event.key==='Enter')event.target.blur()">
-                            <span class="goal-retries-wrap">
-                                <span class="goal-retries-label">max retries</span>
-                                <input class="goal-retries-input" id="goalRetries" type="number" min="1" max="99" value="5" onchange="onGoalRetriesChange()" title="最大重试次数">
-                            </span>
-                        </div>
-                        <label class="goal-check-label" style="margin-left:12px">
-                            <input type="checkbox" id="supervisorCheck" onchange="onSupervisorToggle()">
-                            <span class="goal-picker-label">👁️ Supervisor</span>
-                        </label>
-                        <div class="goal-row" id="supervisorRow" style="display:none">
-                            <input class="goal-input" id="supervisorInput" placeholder="supervisor instructions, e.g. review code quality and suggest improvements..." onblur="onSupervisorBlur()" onkeydown="if(event.key==='Enter')event.target.blur()">
-                        </div>
-                    </div>
-                    <span class="input-hint"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> send</span>
+                    <label class="model-picker"><span class="model-picker-label">MODEL</span><select id="modelSelect"><option value="">Default</option></select></label>
+                    <button class="quality-trigger" id="qualityGateBtn" onclick="toggleQualityPanel()">
+                        <span class="quality-signal"><i></i></span>
+                        <span><b>EXECUTION CONTROL</b><small id="qualitySummary">No loop or supervisor</small></span>
+                        <em>CONFIGURE</em>
+                    </button>
+                    <span class="input-hint"><kbd>CTRL</kbd><i>+</i><kbd>ENTER</kbd></span>
                 </div>
             </div>
-            <div class="input-actions">
-                <button id="sendBtn" onclick="send()">Send</button>
-                <button id="stopBtn" onclick="stopCurrent()" class="btn-stop" style="display:none">Stop</button>
-            </div>
+            <div class="input-actions"><button id="sendBtn" onclick="send()">SEND ↗</button><button id="stopBtn" onclick="stopCurrent()" class="btn-stop" style="display:none">STOP</button></div>
         </div>
 
-        <div class="status-bar">
-            <span class="status-indicator" id="statusIndicator"></span>
-            <span id="statusText">Ready</span>
-            <span id="sessionInfo" class="session-info"></span>
-        </div>
+        <div class="status-bar"><span class="status-indicator" id="statusIndicator"></span><span id="statusText">Ready</span><span id="sessionInfo" class="session-info"></span></div>
     </main>
+</div>
+
+<div class="dag-quickstart" id="dagQuickstart" style="display:none">
+    <div class="dag-qs-dialog">
+        <div class="dag-qs-header"><div><span class="modal-kicker">WORKFLOW LAUNCHER</span><span class="dag-qs-title">Configure mission</span></div><button class="dag-qs-close" onclick="toggleDagQuickstart()">×</button></div>
+        <div class="dag-qs-body">
+            <div class="dag-qs-row"><label>MODE</label><div class="dag-qs-mode"><label class="dag-qs-radio"><input type="radio" name="dagMode" value="new" checked onchange="onDagModeChange()"> New mission</label><label class="dag-qs-radio"><input type="radio" name="dagMode" value="resume" onchange="onDagModeChange()"> Resume</label></div></div>
+            <div id="dagNewRow1" class="dag-qs-row"><label>TEMPLATE</label><select id="dagTemplate" onchange="onDagTemplateChange()"><option value="">Select workflow template</option></select></div>
+            <div id="dagResumeRow1" class="dag-qs-row" style="display:none"><label>WORKSPACE</label><select id="dagExistingWs" onchange="onDagExistingWsChange()"><option value="">Select existing workspace</option></select></div>
+            <div class="dag-qs-row"><label>MISSION ID</label><input type="text" id="dagWorkspace" placeholder="release-candidate" value="" /></div>
+            <div class="dag-qs-preview" id="dagQsPreview" style="display:none">
+                <div class="dag-qs-preview-title"><span>EXECUTION TOPOLOGY</span><em id="templateGraphStats"></em></div>
+                <div class="template-graph-shell">
+                    <div class="template-graph" id="templateGraph"></div>
+                    <aside class="template-inspector" id="templateInspector"><span>SELECT A STEP</span><p>点击节点查看任务职责、依赖、Completion Loop 与 Supervisor Agent。</p></aside>
+                </div>
+                <div class="dag-qs-preview-steps" id="dagQsSteps" style="display:none"></div>
+            </div>
+            <button class="dag-qs-run" onclick="runDagTemplate()">LAUNCH MISSION ↗</button>
+        </div>
+    </div>
+</div>
+
+<div class="quality-panel" id="qualityPanel" style="display:none">
+    <div class="quality-dialog">
+        <header class="quality-header">
+            <div><span class="modal-kicker">EXECUTION CONTROL</span><h3>Choose how the work stays on track</h3><p>Completion Loop 定义自动收敛条件；Supervisor Agent 持续观察执行过程，在偏离时介入纠正。</p></div>
+            <button onclick="toggleQualityPanel()">×</button>
+        </header>
+        <div class="quality-presets">
+            <span>QUICK POLICY</span>
+            <button onclick="applyQualityPreset('delivery')">Delivery ready</button>
+            <button onclick="applyQualityPreset('code')">Code quality</button>
+            <button onclick="applyQualityPreset('research')">Evidence based</button>
+            <button onclick="applyQualityPreset('none')">Clear</button>
+        </div>
+        <div class="quality-grid">
+            <section class="quality-card goal-card">
+                <div class="quality-card-head">
+                    <div class="quality-card-index">01</div>
+                    <div><strong>Completion Loop</strong><span>执行 → 验收 → 反馈 → 重试，直到收敛或预算耗尽</span></div>
+                    <label class="protocol-switch"><input type="checkbox" id="goalCheck" onchange="onGoalToggle()"><i></i></label>
+                </div>
+                <div class="quality-card-body" id="goalRow" style="display:none">
+                    <label>EXIT CONDITION</label>
+                    <textarea class="goal-input" id="goalInput" placeholder="例如：所有测试通过；创建的接口符合 schema；没有未处理错误。" oninput="updateQualitySummary()"></textarea>
+                    <div class="retry-budget">
+                        <div><label>LOOP BUDGET</label><span>退出条件未满足时，最多继续循环的次数</span></div>
+                        <button onclick="changeRetryBudget(-1)">−</button>
+                        <input class="goal-retries-input" id="goalRetries" type="number" min="1" max="99" value="5" onchange="onGoalRetriesChange();updateQualitySummary()">
+                        <button onclick="changeRetryBudget(1)">＋</button>
+                    </div>
+                </div>
+            </section>
+            <section class="quality-card supervisor-card">
+                <div class="quality-card-head">
+                    <div class="quality-card-index">02</div>
+                    <div><strong>Supervisor Agent</strong><span>独立 Agent 持续观察执行过程，发现偏离时发送纠正指令</span></div>
+                    <label class="protocol-switch"><input type="checkbox" id="supervisorCheck" onchange="onSupervisorToggle()"><i></i></label>
+                </div>
+                <div class="quality-card-body" id="supervisorRow" style="display:none">
+                    <label>SUPERVISION BRIEF</label>
+                    <textarea class="goal-input" id="supervisorInput" placeholder="定义 Supervisor 要持续关注的执行风险、允许的边界和需要介入纠正的情况。" oninput="updateQualitySummary()"></textarea>
+                    <div class="supervisor-contract"><span>OBSERVE</span><i>→</i><span>CORRECT WHEN NEEDED</span><i>→</i><span>KEEP RUNNING</span></div>
+                </div>
+            </section>
+        </div>
+        <footer class="quality-footer">
+            <div class="quality-explainer"><b>Completion Loop</b><span>自动收敛到退出条件</span><b>Supervisor Agent</b><span>持续监督并在偏离时纠正</span></div>
+            <button class="quality-cancel" onclick="toggleQualityPanel()">CANCEL</button>
+            <button class="quality-save" onclick="saveQualityPolicy()">APPLY PROTOCOL ↗</button>
+        </footer>
+    </div>
 </div>
 
 <!-- Slash command completions popup (fixed, outside any overflow container) -->
@@ -209,11 +299,18 @@
 <div id="modalLayer"></div>
 
 <script>
-let currentRunId = null;
+let currentAgentId = null;
 let eventSource = null;
 let renderedSeq = 0;
 let autoScroll = true;
 let unreadEvents = 0;
+let agentTreeData = [];
+let agentGraphSignature = '';
+let stageView = 'topology';
+let templateGraphInstance = null;
+let qualityPanelVisible = false;
+let missionFilter = 'recent';
+let missionSearch = '';
 const STATUS_LABEL = {
     running: 'Running…',
     completed: 'Completed',
@@ -226,6 +323,31 @@ const STATUS_LABEL = {
 document.getElementById('promptInput').addEventListener('keydown', (e) => {
     if (slashMenuHandleKey(e)) return;
     if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); send(); }
+});
+
+document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (qualityPanelVisible) toggleQualityPanel();
+    else if (dagQuickstartVisible) toggleDagQuickstart();
+    else if (document.getElementById('missionStage').classList.contains('open')) closeMissionPanel();
+});
+document.getElementById('qualityPanel').addEventListener('mousedown', (e) => {
+    if (e.target === e.currentTarget) toggleQualityPanel();
+});
+document.getElementById('dagQuickstart').addEventListener('mousedown', (e) => {
+    if (e.target === e.currentTarget) toggleDagQuickstart();
+});
+
+document.getElementById('sidebarSearch').addEventListener('input', (e) => {
+    missionSearch = e.target.value.trim().toLowerCase();
+    document.getElementById('sidebarSearchWrap').classList.toggle('has-value', Boolean(missionSearch));
+    renderSidebarTree();
+});
+document.addEventListener('keydown', (e) => {
+    if (e.key === '/' && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) {
+        e.preventDefault();
+        document.getElementById('sidebarSearch').focus();
+    }
 });
 
 const _ta = document.getElementById('promptInput');
@@ -272,20 +394,101 @@ function showPlaceholder(show) {
     }
 }
 
+function setStageContext(title) {
+    const el = document.getElementById('stageContextTitle');
+    if (el) el.textContent = title || 'Untitled mission';
+}
+
+async function openMissionPanel(view = 'workflow') {
+    const stage = document.getElementById('missionStage');
+    stage.classList.add('open');
+    stage.setAttribute('aria-hidden', 'false');
+
+    if (view === 'files') {
+        setStageView('files');
+        if (currentAgentId) await refreshWorkspace(currentAgentId);
+        return;
+    }
+
+    setStageView('topology');
+    graphMode = view === 'agents' ? 'agents' : 'workflow';
+    document.getElementById('workflowGraphTab').classList.toggle('active', graphMode === 'workflow');
+    document.getElementById('agentGraphTab').classList.toggle('active', graphMode === 'agents');
+
+    if (!currentAgentId) {
+        const empty = document.getElementById('orchestrationEmpty');
+        empty.style.display = 'flex';
+        empty.querySelector('.empty-kicker').textContent = 'SELECT A TASK FIRST';
+        empty.querySelector('h3').innerHTML = 'Choose an agent<br>to inspect.';
+        empty.querySelector('p').textContent = '从左侧选择一个任务，然后在这里查看 Workflow 或 Agent Network。';
+        return;
+    }
+
+    document.getElementById('orchestrationEmpty').style.display = 'none';
+    await refreshDag(currentAgentId);
+    requestAnimationFrame(() => {
+        if (graphInstance) {
+            graphInstance.resize();
+            fitGraph();
+        }
+    });
+}
+
+function closeMissionPanel() {
+    const stage = document.getElementById('missionStage');
+    stage.classList.remove('open');
+    stage.setAttribute('aria-hidden', 'true');
+}
+
+function setStageView(view) {
+    stageView = view;
+    document.getElementById('topologyStageTab').classList.toggle('active', view === 'topology');
+    document.getElementById('filesStageTab').classList.toggle('active', view === 'files');
+    const empty = document.getElementById('orchestrationEmpty');
+    const dag = document.getElementById('dagPanel');
+    const workspace = document.getElementById('workspacePanel');
+    if (!currentAgentId) {
+        empty.style.display = 'flex';
+        dag.style.display = 'none';
+        workspace.style.display = 'none';
+        return;
+    }
+    empty.style.display = 'none';
+    dag.style.display = view === 'topology' ? '' : 'none';
+    workspace.style.display = view === 'files' ? '' : 'none';
+    if (view === 'topology' && graphInstance) requestAnimationFrame(() => {
+        graphInstance.resize();
+        fitGraph();
+    });
+}
+
+function updateStageClock() {
+    const clock = document.getElementById('stageClock');
+    if (clock) clock.textContent = new Date().toLocaleTimeString('en-GB', {hour12: false});
+}
+updateStageClock();
+setInterval(updateStageClock, 1000);
+
 function newChat() {
-    currentRunId = null;
+    currentAgentId = null;
     renderedSeq = 0;
     unreadEvents = 0;
     document.getElementById('convStream').innerHTML = '';
     showPlaceholder(true);
     document.getElementById('convTitle').textContent = 'No agent selected';
+    document.getElementById('convSubtitle').textContent = 'Select a mission node to inspect its execution stream';
     document.getElementById('convMeta').textContent = '';
     document.getElementById('sessionInfo').textContent = '';
     setStatus('', 'Ready');
+    setStageContext('No mission selected');
+    closeMissionPanel();
     document.getElementById('dagPanel').style.display = 'none';
+    if (typeof destroyGraph === 'function') destroyGraph();
     document.getElementById('promptInput').focus();
     document.getElementById('workspacePanel').style.display = 'none';
+    document.getElementById('orchestrationEmpty').style.display = 'flex';
     document.getElementById('dagQuickstart').style.display = 'none';
+    dagQuickstartVisible = false;
     updateJumpHint();
 }
 
@@ -295,13 +498,17 @@ function newChat() {
 let DAG_TEMPLATES = [];
 let dagQuickstartVisible = false;
 
-function toggleDagQuickstart() {
+async function toggleDagQuickstart() {
     dagQuickstartVisible = !dagQuickstartVisible;
     const el = document.getElementById('dagQuickstart');
-    el.style.display = dagQuickstartVisible ? '' : 'none';
+    el.style.display = dagQuickstartVisible ? 'flex' : 'none';
     if (dagQuickstartVisible) {
-        loadDagTemplates();
-        loadDagExistingWorkspaces();
+        await Promise.all([loadDagTemplates(), loadDagExistingWorkspaces()]);
+        const mode = document.querySelector('input[name="dagMode"]:checked')?.value;
+        if (mode === 'new' && document.getElementById('dagTemplate').value) onDagTemplateChange();
+    } else if (templateGraphInstance) {
+        templateGraphInstance.destroy();
+        templateGraphInstance = null;
     }
 }
 
@@ -315,6 +522,7 @@ async function loadDagTemplates() {
         DAG_TEMPLATES.forEach(t => {
             sel.innerHTML += `<option value="${t.id}">${t.name} — ${t.description}</option>`;
         });
+        if (DAG_TEMPLATES.length > 0) sel.value = DAG_TEMPLATES[0].id;
     } catch {
         sel.innerHTML += '<option value="" disabled>加载模板失败</option>';
     }
@@ -362,28 +570,13 @@ async function onDagExistingWsChange() {
         return;
     }
     wsInput.value = wsName;  // 任务名 = workspace 名
-    // 加载 dag 状态预览（用 /api/run/{any}/dag?workspace_id=xxx）
+    // 加载 dag 状态预览（用 /api/agent/{any}/dag?workspace_id=xxx）
     try {
-        const resp = await fetch(`/api/run/dummy/dag?workspace_id=${encodeURIComponent(wsName)}`);
+        const resp = await fetch(`/api/agent/dummy/dag?workspace_id=${encodeURIComponent(wsName)}`);
         const data = await resp.json();
         if (data.steps && data.steps.length > 0) {
             preview.style.display = '';
-            const statusIcon = (st) => {
-                if (st === 'done') return '✅';
-                if (st === 'running') return '🔄';
-                if (st === 'pending') return '⏳';
-                if (st === 'failed') return '❌';
-                return '❓';
-            };
-            steps.innerHTML = data.steps.map((s, i) => {
-                const deps = (s.depends_on || []).length > 0 ? ` ← ${s.depends_on.join(', ')}` : '';
-                const st = s.status || 'pending';
-                return `<div class="dag-qs-step">
-                    <span class="dag-qs-step-num">${statusIcon(st)}</span>
-                    <span class="dag-qs-step-name">${escapeHtml(s.name || s.id)}</span>
-                    <span class="dag-qs-step-deps">${deps}</span>
-                </div>`;
-            }).join('');
+            renderTemplateGraph(data.steps, true);
         }
     } catch {}
 }
@@ -392,21 +585,106 @@ function onDagTemplateChange() {
     const tid = document.getElementById('dagTemplate').value;
     const tpl = DAG_TEMPLATES.find(t => t.id === tid);
     const preview = document.getElementById('dagQsPreview');
-    const steps = document.getElementById('dagQsSteps');
     if (tpl) {
         preview.style.display = '';
-        steps.innerHTML = tpl.steps.map((s, i) => {
-            const deps = s.depends_on.length > 0 ? ` ← ${s.depends_on.join(', ')}` : '';
-            return `<div class="dag-qs-step">
-                <span class="dag-qs-step-num">${i+1}</span>
-                <span class="dag-qs-step-name">${escapeHtml(s.name)}</span>
-                <span class="dag-qs-step-deps">${deps}</span>
-            </div>`;
-        }).join('');
+        renderTemplateGraph(tpl.steps || [], false);
         document.getElementById('dagWorkspace').value = tid + '_' + Date.now().toString(36);
     } else {
         preview.style.display = 'none';
+        if (templateGraphInstance) templateGraphInstance.destroy();
+        templateGraphInstance = null;
     }
+}
+
+function renderTemplateGraph(steps, showRuntimeStatus = false) {
+    const container = document.getElementById('templateGraph');
+    const stats = document.getElementById('templateGraphStats');
+    if (!container || !window.cytoscape) return;
+    if (templateGraphInstance) templateGraphInstance.destroy();
+    const ids = new Set(steps.map(step => String(step.id)));
+    const edges = steps.flatMap(step => (step.depends_on || [])
+        .filter(dep => ids.has(String(dep)))
+        .map(dep => ({data: {id: `template:${dep}->${step.id}`, source: String(dep), target: String(step.id)}})));
+    const nodes = steps.map((step, index) => ({data: {
+        id: String(step.id),
+        label: `${String(index + 1).padStart(2, '0')}  ${step.name || step.id}`,
+        name: step.name || step.id,
+        prompt: step.prompt || '',
+        type: step.type || 'generative',
+        goal: step.goal || '',
+        supervisor: typeof step.supervisor === 'string' ? step.supervisor : (step.supervisor ? JSON.stringify(step.supervisor) : ''),
+        status: normalizeGraphStatus(step.status),
+        dependencies: (step.depends_on || []).length,
+        policyKind: 'step',
+    }}));
+    const policyNodes = [];
+    const policyEdges = [];
+    steps.forEach(step => {
+        const id = String(step.id);
+        if (step.goal) {
+            policyEdges.push({data: {id: `loop:${id}`, source: id, target: id, policy: 'loop', label: `↻ ${step.max_goal_retries || 5}×`}});
+        }
+        if (step.supervisor) {
+            const reviewerId = `review:${id}`;
+            const reviewerRule = typeof step.supervisor === 'string' ? step.supervisor : JSON.stringify(step.supervisor);
+            policyNodes.push({data: {
+                id: reviewerId, label: 'Supervisor', name: `Supervisor · ${step.name || id}`,
+                prompt: reviewerRule, type: 'supervisor', supervisor: reviewerRule,
+                goal: '', status: 'pending', dependencies: 1, policyKind: 'supervisor',
+            }});
+            policyEdges.push({data: {id: `supervision-edge:${id}`, source: reviewerId, target: id, policy: 'supervision', label: 'monitors'}});
+        }
+    });
+    stats.textContent = `${nodes.length} steps · ${edges.length} dependencies · ${policyEdges.length} controls`;
+    templateGraphInstance = cytoscape({
+        container,
+        elements: [...nodes, ...policyNodes, ...edges, ...policyEdges],
+        minZoom: .35,
+        maxZoom: 1.8,
+        wheelSensitivity: .2,
+        style: [
+            {selector: 'node', style: {
+                'width': 168, 'height': 48, 'shape': 'round-rectangle',
+                'background-color': '#171b23', 'border-width': 1.2, 'border-color': '#3a4252',
+                'label': 'data(label)', 'color': '#eef1f6', 'font-size': 9, 'font-weight': 600,
+                'font-family': 'Cascadia Code, Consolas, monospace', 'text-wrap': 'wrap',
+                'text-max-width': 142, 'text-valign': 'center', 'text-halign': 'center', 'overlay-opacity': 0,
+            }},
+            {selector: 'node[status="running"]', style: {'border-color': '#f4ba5b', 'border-width': 2}},
+            {selector: 'node[status="done"]', style: {'border-color': '#4fd1a1'}},
+            {selector: 'node[status="failed"]', style: {'border-color': '#ff7185'}},
+            {selector: 'node[policyKind="supervisor"]', style: {'shape': 'diamond', 'width': 68, 'height': 68, 'background-color': '#242942', 'border-color': '#8292ff', 'color': '#dce1ff', 'text-max-width': 54}},
+            {selector: 'node:selected', style: {'border-color': '#aab4ff', 'border-width': 3, 'background-color': '#22283a'}},
+            {selector: 'edge', style: {
+                'width': 1.2, 'line-color': '#465064', 'target-arrow-color': '#69758b',
+                'target-arrow-shape': 'triangle', 'curve-style': 'bezier', 'arrow-scale': .65, 'opacity': .8,
+            }},
+            {selector: 'edge[policy="loop"]', style: {'line-color': '#8292ff', 'target-arrow-color': '#8292ff', 'line-style': 'dashed', 'label': 'data(label)', 'font-size': 8, 'color': '#9da8ff', 'text-background-color': '#11141b', 'text-background-opacity': 1, 'text-background-padding': 3}},
+            {selector: 'edge[policy="supervision"]', style: {'line-color': '#8292ff', 'target-arrow-color': '#8292ff', 'line-style': 'dotted', 'label': 'data(label)', 'font-size': 8, 'color': '#9da8ff'}},
+        ],
+        layout: {name: 'dagre', rankDir: 'LR', rankSep: 64, nodeSep: 28, padding: 24},
+    });
+    templateGraphInstance.on('tap', 'node', event => showTemplateStep(event.target.data(), showRuntimeStatus));
+    requestAnimationFrame(() => templateGraphInstance && templateGraphInstance.fit(undefined, 26));
+    if (nodes.length) showTemplateStep(nodes[0].data, showRuntimeStatus);
+}
+
+function showTemplateStep(step, showRuntimeStatus) {
+    const inspector = document.getElementById('templateInspector');
+    const badges = [
+        `<span>${escapeHtml(step.type)}</span>`,
+        step.goal ? '<span class="has-policy">LOOP</span>' : '',
+        step.supervisor ? '<span class="has-policy">SUPERVISOR</span>' : '',
+        showRuntimeStatus ? `<span>${escapeHtml(step.status)}</span>` : '',
+    ].filter(Boolean).join('');
+    inspector.innerHTML = `
+        <span>STEP PROFILE</span>
+        <strong>${escapeHtml(step.name)}</strong>
+        <div class="template-step-badges">${badges}</div>
+        <label>MISSION</label><p>${escapeHtml(step.prompt || 'No task description')}</p>
+        ${step.goal ? `<label>COMPLETION LOOP · EXIT CONDITION</label><p>${escapeHtml(step.goal)}</p>` : ''}
+        ${step.supervisor ? `<label>SUPERVISOR · EXECUTION WATCH BRIEF</label><p>${escapeHtml(step.supervisor)}</p>` : ''}
+        <small>${step.dependencies} upstream dependencies</small>`;
 }
 
 async function runDagTemplate() {
@@ -432,14 +710,17 @@ async function runDagTemplate() {
     const data = await resp.json();
     if (data.error) { alert(data.error); return; }
 
-    currentRunId = data.run_id;
+    currentAgentId = data.agent_id;
     renderedSeq = 0;
     document.getElementById("convStream").innerHTML = "";
     showPlaceholder(false);
-    const titlePrefix = isResume ? "🔄 继续: " : "🚀 ";
     const tpl = isResume ? {name: ws} : DAG_TEMPLATES.find(t => t.id === tid);
-    document.getElementById("convTitle").textContent = titlePrefix + (tpl ? tpl.name : ws);
-    connectStream(data.run_id);
+    const missionTitle = tpl ? tpl.name : ws;
+    document.getElementById("convTitle").textContent = missionTitle;
+    setStageContext(ws);
+    await openMissionPanel('workflow');
+    document.getElementById('orchestrationEmpty').style.display = 'none';
+    connectStream(data.agent_id);
     setStatus("running", "Running…");
     document.getElementById("stopBtn").style.display = "";
     document.getElementById("dagQuickstart").style.display = "none";
@@ -457,10 +738,10 @@ async function send() {
     sending = true;
     const btn = document.getElementById('sendBtn');
     btn.disabled = true;
-    btn.textContent = 'Sending...';
+    btn.textContent = 'SENDING';
 
     try {
-        if (currentRunId) {
+        if (currentAgentId) {
             await continueChat(prompt);
         } else {
             await startNew(prompt);
@@ -469,7 +750,7 @@ async function send() {
     } finally {
         sending = false;
         btn.disabled = false;
-        btn.textContent = 'Send';
+        btn.textContent = 'SEND ↗';
     }
 }
 
@@ -487,24 +768,123 @@ function getSupervisor() {
     return (input && input.value.trim()) || null;
 }
 
+function toggleQualityPanel() {
+    qualityPanelVisible = !qualityPanelVisible;
+    document.getElementById('qualityPanel').style.display = qualityPanelVisible ? 'flex' : 'none';
+    if (qualityPanelVisible) updateQualitySummary();
+}
+
+function updateQualitySummary() {
+    const hasGoal = Boolean(getGoal());
+    const hasSupervisor = Boolean(getSupervisor());
+    const summary = document.getElementById('qualitySummary');
+    const trigger = document.getElementById('qualityGateBtn');
+    let text = 'No loop or supervisor';
+    if (hasGoal && hasSupervisor) text = `Loop ${document.getElementById('goalRetries').value}× + Supervisor`;
+    else if (hasGoal) text = `Completion loop · ${document.getElementById('goalRetries').value}×`;
+    else if (hasSupervisor) text = 'Supervisor agent enabled';
+    summary.textContent = text;
+    trigger.classList.toggle('active', hasGoal || hasSupervisor);
+}
+
+function changeRetryBudget(delta) {
+    const input = document.getElementById('goalRetries');
+    input.value = Math.max(1, Math.min(99, (parseInt(input.value) || 5) + delta));
+    updateQualitySummary();
+}
+
+function applyQualityPreset(name) {
+    const goalCheck = document.getElementById('goalCheck');
+    const supervisorCheck = document.getElementById('supervisorCheck');
+    const goal = document.getElementById('goalInput');
+    const supervisor = document.getElementById('supervisorInput');
+    const retries = document.getElementById('goalRetries');
+    const presets = {
+        delivery: {
+            goal: '交付物完整可运行；所有相关测试通过；没有未处理错误；输出包含变更摘要与验证结果。',
+            supervisor: '你是交付审查者。检查需求覆盖、可运行性、测试结果和明显回归。全部满足时回复 PASS；否则回复 CORRECTION: 并给出可执行的修正清单。',
+            retries: 5,
+        },
+        code: {
+            goal: '实现满足需求；代码结构清晰；相关测试通过；不存在明显安全问题、重复代码或破坏性改动。',
+            supervisor: '你是严格的代码审查者。检查正确性、边界情况、架构一致性、测试覆盖和安全性。通过回复 PASS；有问题回复 CORRECTION: 并按严重程度列出修改项。',
+            retries: 4,
+        },
+        research: {
+            goal: '结论直接回答问题；关键判断有可追溯证据；明确区分事实、推断和不确定项。',
+            supervisor: '你是事实核查者。检查证据质量、来源一致性、推理跳跃和遗漏的反例。可信且完整时回复 PASS；否则回复 CORRECTION: 并指出需要补证或修正之处。',
+            retries: 3,
+        },
+    };
+    if (name === 'none') {
+        goalCheck.checked = false;
+        supervisorCheck.checked = false;
+        goal.value = '';
+        supervisor.value = '';
+    } else {
+        const preset = presets[name];
+        goalCheck.checked = true;
+        supervisorCheck.checked = true;
+        goal.value = preset.goal;
+        supervisor.value = preset.supervisor;
+        retries.value = preset.retries;
+    }
+    document.getElementById('goalRow').style.display = goalCheck.checked ? '' : 'none';
+    document.getElementById('supervisorRow').style.display = supervisorCheck.checked ? '' : 'none';
+    updateQualitySummary();
+}
+
+async function saveQualityPolicy() {
+    const goal = getGoal();
+    const supervisor = getSupervisor();
+    const maxRetries = parseInt(document.getElementById('goalRetries').value) || 5;
+    if (document.getElementById('goalCheck').checked && !goal) {
+        showToast('请填写可验证的完成条件', 'error');
+        return;
+    }
+    if (document.getElementById('supervisorCheck').checked && !supervisor) {
+        showToast('请定义 Supervisor Agent 的执行监督职责', 'error');
+        return;
+    }
+    if (currentAgentId) {
+        const response = await fetch(`/api/agent/${currentAgentId}/quality-policy`, {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({goal, supervisor, max_retries: maxRetries}),
+        });
+        const result = await response.json();
+        if (!response.ok || result.error) {
+            showToast(result.error || 'Execution control 保存失败', 'error');
+            return;
+        }
+        showToast('Completion Loop 与 Supervisor Agent 已更新', 'success');
+        refreshTree();
+    }
+    updateQualitySummary();
+    qualityPanelVisible = false;
+    document.getElementById('qualityPanel').style.display = 'none';
+}
+
 async function startNew(prompt) {
     const model = document.getElementById('modelSelect').value || null;
     const goal = getGoal();
     const supervisor = getSupervisor();
     const maxRetries = parseInt(document.getElementById('goalRetries').value) || null;
-    const resp = await fetch('/api/run', {
+    const resp = await fetch('/api/agent', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({prompt, model, goal, max_goal_retries: maxRetries, supervisor})
     });
     const data = await resp.json();
     if (data.error) { alert(data.error); return; }
-    currentRunId = data.run_id;
+    currentAgentId = data.agent_id;
     renderedSeq = 0;
     document.getElementById('convStream').innerHTML = '';
     showPlaceholder(false);
-    document.getElementById('convTitle').textContent = prompt.length > 80 ? prompt.slice(0, 80) + '…' : prompt;
-    connectStream(data.run_id);
+    const missionTitle = prompt.length > 80 ? prompt.slice(0, 80) + '…' : prompt;
+    document.getElementById('convTitle').textContent = missionTitle;
+    setStageContext(missionTitle);
+    setStageView('topology');
+    connectStream(data.agent_id);
     setStatus('running', 'Running…');
     document.getElementById('stopBtn').style.display = '';
     refreshTree();
@@ -513,23 +893,23 @@ async function startNew(prompt) {
 async function continueChat(prompt) {
     const model = document.getElementById('modelSelect').value || null;
     const goal = getGoal();
-    const resp = await fetch(`/api/run/${currentRunId}/continue`, {
+    const resp = await fetch(`/api/agent/${currentAgentId}/continue`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({prompt, model, goal})
     });
     const data = await resp.json();
     if (data.error) { alert(data.error); return; }
-    connectStream(currentRunId);
+    connectStream(currentAgentId);
     setStatus('running', 'Running…');
     document.getElementById('stopBtn').style.display = '';
 }
 
-function connectStream(runId) {
+function connectStream(agentId) {
     if (eventSource) { eventSource.close(); }
-    eventSource = new EventSource(`/api/run/${runId}/stream`);
+    eventSource = new EventSource(`/api/agent/${agentId}/stream`);
     eventSource.onmessage = (e) => {
-        if (currentRunId !== runId) return;  // 已切换到其他 agent，丢弃
+        if (currentAgentId !== agentId) return;  // 已切换到其他 agent，丢弃
         let ev;
         try { ev = JSON.parse(e.data); }
         catch { ev = { kind: 'raw', text: e.data }; }
@@ -544,7 +924,7 @@ function connectStream(runId) {
         document.getElementById('stopBtn').style.display = 'none';
         refreshTree();
         updateSessionInfo();
-        if (currentRunId) { refreshWorkspace(currentRunId); refreshDag(currentRunId); }
+        if (currentAgentId) { refreshWorkspace(currentAgentId); refreshDag(currentAgentId); }
     });
     eventSource.onerror = () => {
         if (eventSource) { eventSource.close(); eventSource = null; }
@@ -554,27 +934,30 @@ function connectStream(runId) {
 }
 
 async function stopCurrent() {
-    if (!currentRunId) return;
-    await fetch(`/api/run/${currentRunId}/stop`, {method: 'POST'});
+    if (!currentAgentId) return;
+    await fetch(`/api/agent/${currentAgentId}/stop`, {method: 'POST'});
 }
 
-async function viewRun(runId) {
-    console.log('[viewRun] called with', runId, 'prev currentRunId=', currentRunId);
-    currentRunId = runId;
+async function viewAgent(agentId) {
+    console.log('[viewAgent] called with', agentId, 'prev currentAgentId=', currentAgentId);
+    currentAgentId = agentId;
     if (eventSource) { eventSource.close(); eventSource = null; }
     // 先重置 renderedSeq，防止切换前的旧 stream 回调污染新 run 的序号
     renderedSeq = 0;
-    const resp = await fetch(`/api/run/${runId}`);
+    const resp = await fetch(`/api/agent/${agentId}`);
     if (resp.status === 404) { newChat(); refreshTree(); return; }
     // 如果 fetch 期间用户又切走了，放弃渲染
-    if (currentRunId !== runId) return;
+    if (currentAgentId !== agentId) return;
     const data = await resp.json();
     document.getElementById('convStream').innerHTML = '';
     showPlaceholder(false);
     renderedSeq = 0;
 
     const title = (data.prompt || '').replace(/\[Agent OS Communication Protocol[^\]]*\]/g,'').replace(/\[\/?Your Task\]/g,'').trim();
-    document.getElementById('convTitle').textContent = title.length > 80 ? title.slice(0, 80) + '…' : (title || data.run_id);
+    const displayTitle = title.length > 80 ? title.slice(0, 80) + '…' : (title || data.agent_id);
+    document.getElementById('convTitle').textContent = displayTitle;
+    setStageContext(data.label || displayTitle);
+    setStageView('topology');
     updateConvSubtitle(data);
 
     const events = data.events || [];
@@ -586,21 +969,21 @@ async function viewRun(runId) {
     unreadEvents = 0;
     scrollToBottom();
     if (data.status === 'running') {
-        connectStream(runId);
+        connectStream(agentId);
         setStatus('running', STATUS_LABEL.running);
         document.getElementById('stopBtn').style.display = '';
     } else if (data.status === 'plan_pending') {
         setStatus('plan_pending', STATUS_LABEL.plan_pending);
         document.getElementById('stopBtn').style.display = 'none';
-        showPlanApproval(runId, data.plan_content, data.plan_file);
+        showPlanApproval(agentId, data.plan_content, data.plan_file);
     } else {
         setStatus(data.status, STATUS_LABEL[data.status] || data.status);
         document.getElementById('stopBtn').style.display = 'none';
     }
     updateSessionInfo();
     refreshTree();
-    refreshWorkspace(runId);
-    refreshDag(runId);
+    refreshWorkspace(agentId);
+    refreshDag(agentId);
     // 切换会话后自动聚焦输入框
     document.getElementById('promptInput').focus();
 }
@@ -612,7 +995,7 @@ function updateConvSubtitle(data) {
     if (data.model) bits.push(data.model);
     if (data.session_id) bits.push(`session ${data.session_id.slice(0,8)}`);
     if (data.turns > 1) bits.push(`${data.turns} turns`);
-    if (data.children_run_ids && data.children_run_ids.length > 0) bits.push(`${data.children_run_ids.length} children`);
+    if (data.children_ids && data.children_ids.length > 0) bits.push(`${data.children_ids.length} children`);
     if (data.task_type === 'interactive') bits.push('interactive');
     if (data.user_terminated) bits.push('ended by user');
     sub.textContent = bits.join(' · ');
@@ -754,11 +1137,11 @@ function renderPrompt(ev) {
 }
 
 async function rewindToSeq(seq, promptText) {
-    if (!currentRunId) return;
+    if (!currentAgentId) return;
     const preview = (promptText || '').slice(0, 60);
     if (!confirm(`回退会话到这条消息之前？\n\n「${preview}${promptText.length > 60 ? '...' : ''}」\n\n⚠️ 这条消息及之后的所有对话会被删除\n⚠️ 对应的 git commit 也会被撤销\n\n此操作不可撤销。`)) return;
     try {
-        const resp = await fetch(`/api/run/${currentRunId}/rewind`, {
+        const resp = await fetch(`/api/agent/${currentAgentId}/rewind`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({seq}),
@@ -769,9 +1152,9 @@ async function rewindToSeq(seq, promptText) {
             return;
         }
         // 重新拉一次 run 状态并重连 stream（事件流已被截断）
-        viewRun(currentRunId);
-        refreshWorkspace(currentRunId);
-        refreshDag(currentRunId);
+        viewAgent(currentAgentId);
+        refreshWorkspace(currentAgentId);
+        refreshDag(currentAgentId);
     } catch (e) {
         alert(`回退失败：${e}`);
     }
@@ -1173,17 +1556,17 @@ function renderPlanPending(ev) {
         wrap.appendChild(sub);
     }
     // 触发审批面板（如果是实时 SSE）
-    // 优先用事件里的 run_id，兜底用 currentRunId
-    const runId = ev.run_id || currentRunId;
+    // 优先用事件里的 run_id，兜底用 currentAgentId
+    const agentId = ev.agent_id || currentAgentId;
     setTimeout(() => {
-        if (runId) {
-            fetch(`/api/run/${runId}`)
+        if (agentId) {
+            fetch(`/api/agent/${agentId}`)
                 .then(r => r.json())
                 .then(d => {
                     if (d.status === 'plan_pending') {
                         setStatus('plan_pending', STATUS_LABEL.plan_pending);
                         document.getElementById('stopBtn').style.display = 'none';
-                        showPlanApproval(runId, d.plan_content, d.plan_file);
+                        showPlanApproval(agentId, d.plan_content, d.plan_file);
                     }
                 }).catch(() => {});
         }
@@ -1191,7 +1574,7 @@ function renderPlanPending(ev) {
     return wrap;
 }
 
-function showPlanApproval(runId, planContent, planFile) {
+function showPlanApproval(agentId, planContent, planFile) {
     document.querySelectorAll('.plan-approval-panel').forEach(e => e.remove());
 
     const panel = document.createElement('div');
@@ -1234,7 +1617,7 @@ function showPlanApproval(runId, planContent, planFile) {
         if (e.key === 'Enter') {
             e.preventDefault();
             e.stopPropagation();
-            if (!feedbackInput.disabled) approvePlan(runId, feedbackInput.value);
+            if (!feedbackInput.disabled) approvePlan(agentId, feedbackInput.value);
         }
     });
     footer.appendChild(feedbackInput);
@@ -1244,12 +1627,12 @@ function showPlanApproval(runId, planContent, planFile) {
     const approveBtn = document.createElement('button');
     approveBtn.className = 'btn-approve';
     approveBtn.textContent = 'Approve';
-    approveBtn.onclick = () => approvePlan(runId, feedbackInput.value);
+    approveBtn.onclick = () => approvePlan(agentId, feedbackInput.value);
 
     const rejectBtn = document.createElement('button');
     rejectBtn.className = 'btn-reject';
     rejectBtn.textContent = 'Reject';
-    rejectBtn.onclick = () => rejectPlan(runId, feedbackInput.value);
+    rejectBtn.onclick = () => rejectPlan(agentId, feedbackInput.value);
 
     btns.appendChild(approveBtn);
     btns.appendChild(rejectBtn);
@@ -1281,14 +1664,14 @@ window.addEventListener('resize', () => {
     if (panel && panel.style.position === 'fixed') _positionPlanPanel(panel);
 });
 
-async function approvePlan(runId, feedback) {
+async function approvePlan(agentId, feedback) {
     const panel = document.querySelector('.plan-approval-panel');
     if (panel) {
         // 禁用所有按钮防止重复点击
         panel.querySelectorAll('button').forEach(b => b.disabled = true);
         panel.querySelector('.plan-approval-feedback').disabled = true;
     }
-    const resp = await fetch(`/api/run/${runId}/plan/approve`, {
+    const resp = await fetch(`/api/agent/${agentId}/plan/approve`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ feedback: feedback || '' }),
@@ -1298,19 +1681,19 @@ async function approvePlan(runId, feedback) {
     if (data.ok) {
         setStatus('running', STATUS_LABEL.running);
         document.getElementById('stopBtn').style.display = '';
-        connectStream(runId);
+        connectStream(agentId);
     } else {
         alert('Approve failed: ' + (data.error || 'unknown'));
     }
 }
 
-async function rejectPlan(runId, feedback) {
+async function rejectPlan(agentId, feedback) {
     const panel = document.querySelector('.plan-approval-panel');
     if (panel) {
         panel.querySelectorAll('button').forEach(b => b.disabled = true);
         panel.querySelector('.plan-approval-feedback').disabled = true;
     }
-    const resp = await fetch(`/api/run/${runId}/plan/reject`, {
+    const resp = await fetch(`/api/agent/${agentId}/plan/reject`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ feedback: feedback || '' }),
@@ -1320,7 +1703,7 @@ async function rejectPlan(runId, feedback) {
     if (data.ok) {
         setStatus('running', STATUS_LABEL.running);
         document.getElementById('stopBtn').style.display = '';
-        connectStream(runId);
+        connectStream(agentId);
     } else {
         alert('Reject failed: ' + (data.error || 'unknown'));
     }
@@ -1339,15 +1722,15 @@ function setStatus(type, text) {
 }
 
 async function updateSessionInfo() {
-    if (!currentRunId) return;
-    const resp = await fetch(`/api/run/${currentRunId}`);
+    if (!currentAgentId) return;
+    const resp = await fetch(`/api/agent/${currentAgentId}`);
     const data = await resp.json();
     const info = document.getElementById('sessionInfo');
     const meta = document.getElementById('convMeta');
     const parts = [];
     if (data.session_id) parts.push(`session ${data.session_id.slice(0,8)}`);
     if (data.turns > 1) parts.push(`${data.turns} turns`);
-    if (data.children_run_ids && data.children_run_ids.length > 0) parts.push(`${data.children_run_ids.length} children`);
+    if (data.children_ids && data.children_ids.length > 0) parts.push(`${data.children_ids.length} children`);
     info.textContent = parts.join(' · ');
     meta.textContent = parts.join(' · ');
     // Goal picker
@@ -1356,19 +1739,21 @@ async function updateSessionInfo() {
     const goalRow = document.getElementById('goalRow');
     const retriesInput = document.getElementById('goalRetries');
     const goalText = data.goal || '';
+    const supervisorText = data.supervisor || '';
     const maxRetries = data.max_goal_retries || 5;
     _goalUpdating = true;
-    if (goalText) {
-        check.checked = true;
-        input.value = goalText;
-        goalRow.style.display = '';
-        retriesInput.value = maxRetries;
-    } else {
-        check.checked = false;
-        input.value = '';
-        goalRow.style.display = 'none';
-    }
+    check.checked = Boolean(goalText);
+    input.value = goalText;
+    goalRow.style.display = goalText ? '' : 'none';
+    retriesInput.value = maxRetries;
+    const supervisorCheck = document.getElementById('supervisorCheck');
+    const supervisorInput = document.getElementById('supervisorInput');
+    const supervisorRow = document.getElementById('supervisorRow');
+    supervisorCheck.checked = Boolean(supervisorText);
+    supervisorInput.value = supervisorText;
+    supervisorRow.style.display = supervisorText ? '' : 'none';
     _goalUpdating = false;
+    updateQualitySummary();
 }
 
 let _goalUpdating = false;  // 程序更新 checkbox 时不触发 API
@@ -1380,23 +1765,17 @@ async function onGoalToggle() {
     const input = document.getElementById('goalInput');
     const show = check.checked;
     goalRow.style.display = show ? '' : 'none';
-    if (show) {
-        input.focus();
-    } else if (currentRunId) {
-        await fetch('/api/run/' + currentRunId + '/set-goal', {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({goal: ''})
-        });
-    }
+    if (show) input.focus();
+    updateQualitySummary();
 }
 
 async function onGoalBlur() {
     if (_goalUpdating) return;
     const input = document.getElementById('goalInput');
     const goal = input.value.trim();
-    if (!currentRunId) return;
+    if (!currentAgentId) return;
     const maxRetries = parseInt(document.getElementById('goalRetries').value) || 5;
-    await fetch('/api/run/' + currentRunId + '/set-goal', {
+    await fetch('/api/agent/' + currentAgentId + '/set-goal', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({goal, max_retries: maxRetries})
     });
@@ -1407,19 +1786,61 @@ function onSupervisorToggle() {
     const row = document.getElementById('supervisorRow');
     row.style.display = check.checked ? '' : 'none';
     if (check.checked) document.getElementById('supervisorInput').focus();
+    updateQualitySummary();
 }
 
 function onSupervisorBlur() {
-    // supervisor 通过 startNew 传入，不需要单独的 API
+    updateQualitySummary();
 }
 
 async function onGoalRetriesChange() {
-    if (_goalUpdating || !currentRunId) return;
-    const maxRetries = parseInt(document.getElementById('goalRetries').value) || 5;
-    await fetch('/api/run/' + currentRunId + '/set-max-goal-retries', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({max_retries: maxRetries})
-    });
+    if (_goalUpdating) return;
+    const input = document.getElementById('goalRetries');
+    input.value = Math.max(1, Math.min(99, parseInt(input.value) || 5));
+    updateQualitySummary();
+}
+
+function clearSidebarSearch() {
+    const input = document.getElementById('sidebarSearch');
+    input.value = '';
+    missionSearch = '';
+    document.getElementById('sidebarSearchWrap').classList.remove('has-value');
+    renderSidebarTree();
+    input.focus();
+}
+
+function setMissionFilter(mode) {
+    missionFilter = mode;
+    document.getElementById('recentMissionFilter').classList.toggle('active', mode === 'recent');
+    document.getElementById('allMissionFilter').classList.toggle('active', mode === 'all');
+    renderSidebarTree();
+}
+
+function filterAgentNode(node, query) {
+    const children = (node.children || []).map(child => filterAgentNode(child, query)).filter(Boolean);
+    const haystack = [node.label, node.prompt, node.agent_id, node.model, node.workspace_path]
+        .filter(Boolean).join(' ').toLowerCase();
+    if (haystack.includes(query) || children.length) return {...node, children};
+    return null;
+}
+
+function renderSidebarTree() {
+    const container = document.getElementById('treeContainer');
+    let roots = agentTreeData;
+    if (missionSearch) {
+        roots = roots.map(root => filterAgentNode(root, missionSearch)).filter(Boolean);
+    } else if (missionFilter === 'recent') {
+        const active = roots.filter(root => ['running', 'waiting', 'plan_pending'].includes(root.status));
+        const recent = [...roots]
+            .sort((a, b) => String(b.started_at || '').localeCompare(String(a.started_at || '')))
+            .slice(0, 24);
+        const ids = new Set();
+        roots = [...active, ...recent].filter(root => !ids.has(root.agent_id) && ids.add(root.agent_id));
+    }
+    container.innerHTML = renderWorkspaceGroups(roots);
+    if (!missionSearch && missionFilter === 'recent' && agentTreeData.length > roots.length) {
+        container.insertAdjacentHTML('beforeend', `<button class="show-archive-btn" onclick="setMissionFilter('all')">＋ ${agentTreeData.length - roots.length} archived missions</button>`);
+    }
 }
 
 async function refreshTree(workspaceId) {
@@ -1430,8 +1851,17 @@ async function refreshTree(workspaceId) {
     const resp = await fetch(url);
     const data = await resp.json();
     const roots = data.tree || [];
-    const container = document.getElementById('treeContainer');
-    container.innerHTML = renderWorkspaceGroups(roots);
+    agentTreeData = roots;
+    renderSidebarTree();
+    const totalAgents = roots.reduce((sum, root) => sum + _countTreeNodes(root), 0);
+    document.getElementById('sidebarStats').textContent = `${totalAgents} agent${totalAgents === 1 ? '' : 's'}`;
+    if (currentAgentId && graphMode === 'agents' && document.getElementById('dagPanel').style.display !== 'none') {
+        const signature = JSON.stringify(roots, (key, value) => key === 'prompt' && typeof value === 'string' ? value.slice(0, 120) : value);
+        if (signature !== agentGraphSignature) {
+            agentGraphSignature = signature;
+            renderAgentGraph();
+        }
+    }
 }
 
 function _wsNameOf(node) {
@@ -1475,15 +1905,15 @@ function renderWorkspaceGroups(roots) {
     for (const [wsName, rs] of groups) {
         const total = rs.reduce((n, r) => n + _countTreeNodes(r), 0);
         const isReal = wsName !== '__no_ws__';
-        // 取第一个 root 的 run_id，用于点击 workspace 组时查看 DAG
-        const firstRunId = rs[0] ? rs[0].run_id : '';
+        // 取第一个 root 的 agent_id，用于点击 workspace 组时查看 DAG
+        const firstAgentId = rs[0] ? rs[0].agent_id : '';
         const label = isReal ? `📁 ${escapeHtml(wsName)}` : '(无 workspace)';
         const cls = 'ws-group-header';
         const delBtn = isReal
             ? `<button class="ws-group-del" title="删除整个 workspace（含所有 run + 磁盘文件）" onclick="event.stopPropagation(); deleteWorkspace('${wsName}')">🗑</button>`
             : '';
-        const clickHandler = isReal && firstRunId
-            ? `onclick="viewRun('${firstRunId}')" style="cursor:pointer"`
+        const clickHandler = isReal && firstAgentId
+            ? `onclick="viewAgent('${firstAgentId}')" style="cursor:pointer"`
             : '';
         html += `<div class="ws-group">
             <div class="${cls}" ${clickHandler} title="点击查看 DAG 编排状态">
@@ -1512,10 +1942,10 @@ async function deleteWorkspace(wsName) {
         }
         showToast(`已删除 workspace ${wsName.slice(0,8)}（${data.deleted_runs} runs · ${data.purged_dirs} 目录）`, 'success');
         // 当前看的 run 可能被删了，回到空白
-        if (currentRunId) {
+        if (currentAgentId) {
             // 查 run 是否还在
-            const r = await fetch('/api/runs').then(r => r.json()).catch(() => ({runs: []}));
-            const stillThere = (r.runs || []).some(x => x.run_id === currentRunId);
+            const r = await fetch('/api/agents').then(r => r.json()).catch(() => ({runs: []}));
+            const stillThere = (r.agents || []).some(x => x.agent_id === currentAgentId);
             if (!stillThere) newChat();
         }
         refreshTree();
@@ -1524,22 +1954,22 @@ async function deleteWorkspace(wsName) {
     }
 }
 
-// 折叠状态：node.run_id → bool（true = 折叠子节点）
+// 折叠状态：node.agent_id → bool（true = 折叠子节点）
 const collapsedNodes = new Set();
 
-function toggleCollapse(runId, ev) {
+function toggleCollapse(agentId, ev) {
     if (ev) ev.stopPropagation();
-    if (collapsedNodes.has(runId)) collapsedNodes.delete(runId);
-    else collapsedNodes.add(runId);
+    if (collapsedNodes.has(agentId)) collapsedNodes.delete(agentId);
+    else collapsedNodes.add(agentId);
     refreshTree();
 }
 
 function renderTree(nodes, depth) {
     if (!nodes || nodes.length === 0) return '<div class="tree-empty">No agents yet</div>';
     return nodes.map(node => {
-        const isActive = node.run_id === currentRunId;
+        const isActive = node.agent_id === currentAgentId;
         const hasChildren = node.children && node.children.length > 0;
-        const isCollapsed = collapsedNodes.has(node.run_id);
+        const isCollapsed = collapsedNodes.has(node.agent_id);
         const statusIcon = {
             running: '<span class="ti running"></span>',
             completed: '<span class="ti completed"></span>',
@@ -1550,7 +1980,7 @@ function renderTree(nodes, depth) {
         }[node.status] || '<span class="ti"></span>';
 
         // 优先用用户自定义 label，否则直接用后端已提取的 prompt
-        const showPrompt = node.label || node.prompt || node.run_id.slice(0, 8);
+        const showPrompt = node.label || node.prompt || node.agent_id.slice(0, 8);
 
         const modelBadge = node.model ? `<span class="tree-badge tree-badge-model">${escapeHtml(node.model)}</span>` : '';
         const typeBadge = (node.task_type === 'interactive')
@@ -1562,14 +1992,16 @@ function renderTree(nodes, depth) {
         const canStop = node.status === 'running' && node.is_root;
 
         const collapseBtn = hasChildren
-            ? `<button class="tree-toggle" onclick="toggleCollapse('${node.run_id}', event)" title="${isCollapsed ? 'Expand' : 'Collapse'}">${isCollapsed ? '▸' : '▾'}</button>`
+            ? `<button class="tree-toggle" onclick="toggleCollapse('${node.agent_id}', event)" title="${isCollapsed ? 'Expand' : 'Collapse'}">${isCollapsed ? '▸' : '▾'}</button>`
             : '<span class="tree-toggle-spacer"></span>';
 
-        let html = `<div class="tree-node depth-${depth} ${isActive ? 'active' : ''} ${node.status}" data-run-id="${node.run_id}" onclick="viewRun('${node.run_id}')">`;
+        let html = `<div class="tree-node depth-${depth} ${isActive ? 'active' : ''} ${node.status}" data-agent-id="${node.agent_id}" onclick="viewAgent('${node.agent_id}')">`;
+        const roleCode = node.is_root ? 'R' : (node.task_type === 'interactive' ? 'I' : (node.task_type === 'explore' ? 'E' : 'A'));
+        const roleName = node.is_root ? 'Root agent' : `${node.task_type || 'generative'} agent`;
         html += `<div class="tree-node-row">`;
         html += collapseBtn;
-        html += statusIcon;
-        html += `<span class="tree-node-prompt">${escapeHtml(showPrompt)}</span>`;
+        html += `<span class="agent-role-icon role-${escapeHtml(node.task_type || 'root')}" title="${escapeHtml(roleName)}">${roleCode}${statusIcon}</span>`;
+        html += `<span class="tree-node-prompt" title="${escapeHtml(showPrompt)}">${escapeHtml(showPrompt)}</span>`;
         // 子任务进度（如果有 children）
         const childSummary = _summarizeChildren(node);
         if (childSummary) {
@@ -1584,22 +2016,23 @@ function renderTree(nodes, depth) {
         }
         // hover 操作按钮组
         html += `<span class="tree-actions">`;
-        html += `<button class="tree-btn-icon tree-btn-rename" title="重命名" onclick="event.stopPropagation();renameRun('${node.run_id}')">✎</button>`;
+        html += `<button class="tree-btn-icon tree-btn-rename" title="重命名" onclick="event.stopPropagation();renameAgent('${node.agent_id}')">✎</button>`;
         if (canDone) {
-            html += `<button class="tree-btn-done" onclick="event.stopPropagation();completeAgent('${node.run_id}', '${escapeHtml(doneLabel)}', '${node.task_type || 'generative'}')">${escapeHtml(doneLabel)}</button>`;
+            html += `<button class="tree-btn-done" onclick="event.stopPropagation();completeAgent('${node.agent_id}', '${escapeHtml(doneLabel)}', '${node.task_type || 'generative'}')">${escapeHtml(doneLabel)}</button>`;
         }
         if (canStop) {
-            html += `<button class="tree-btn-icon tree-btn-stop" title="Stop" onclick="event.stopPropagation();stopRun('${node.run_id}')">■</button>`;
+            html += `<button class="tree-btn-icon tree-btn-stop" title="Stop" onclick="event.stopPropagation();stopRun('${node.agent_id}')">■</button>`;
         }
         if (node.status === 'plan_pending') {
-            html += `<button class="tree-btn-done" style="background:#22c55e" onclick="event.stopPropagation();viewRun('${node.run_id}')">Review Plan</button>`;
+            html += `<button class="tree-btn-done" style="background:#22c55e" onclick="event.stopPropagation();viewAgent('${node.agent_id}')">Review Plan</button>`;
         }
-        html += `<button class="tree-btn-icon tree-btn-del" title="Delete" onclick="event.stopPropagation();deleteRun('${node.run_id}')">✕</button>`;
+        html += `<button class="tree-btn-icon tree-btn-del" title="Delete" onclick="event.stopPropagation();deleteAgent('${node.agent_id}')">✕</button>`;
         html += `</span>`;
         html += `</div>`;
-        const goalBadge = node.goal ? `<span class="tree-badge tree-badge-goal" title="Goal: ${escapeHtml(node.goal)}">goal</span>` : '';
-        if (modelBadge || typeBadge || goalBadge) {
-            html += `<div class="tree-node-badges">${typeBadge}${modelBadge}${goalBadge}</div>`;
+        const goalBadge = node.goal ? `<span class="tree-badge tree-badge-goal" title="Loop exit: ${escapeHtml(node.goal)}">loop ${node.max_goal_retries || 5}×</span>` : '';
+        const supervisorBadge = node.supervisor ? `<span class="tree-badge tree-badge-supervisor" title="Supervisor watch brief: ${escapeHtml(node.supervisor)}">supervised</span>` : '';
+        if (modelBadge || typeBadge || goalBadge || supervisorBadge) {
+            html += `<div class="tree-node-badges">${typeBadge}${modelBadge}${goalBadge}${supervisorBadge}</div>`;
         }
         // WAITING 节点的进度条（直观展示子任务完成度）
         if (childSummary && (node.status === 'waiting' || (childSummary.running > 0 && hasChildren))) {
@@ -1615,52 +2048,52 @@ function renderTree(nodes, depth) {
     }).join('');
 }
 
-async function stopRun(runId) {
-    await fetch(`/api/run/${runId}/stop`, {method: 'POST'});
+async function stopRun(agentId) {
+    await fetch(`/api/agent/${agentId}/stop`, {method: 'POST'});
     refreshTree();
 }
 
-async function deleteRun(runId) {
-    const isCurrent = runId === currentRunId;
+async function deleteAgent(agentId) {
+    const isCurrent = agentId === currentAgentId;
     if (!confirm('Delete this agent (and all descendants)?')) return;
-    const resp = await fetch(`/api/run/${runId}`, {method: 'DELETE'});
+    const resp = await fetch(`/api/agent/${agentId}`, {method: 'DELETE'});
     if (!resp.ok) { alert('Delete failed'); return; }
     if (isCurrent) newChat();
     refreshTree();
 }
 
 async function clearCompleted() {
-    if (!currentRunId) {
+    if (!currentAgentId) {
         // 没有选中 run，走原来的"清除所有已完成"逻辑
         if (!confirm('Clear all completed/failed/stopped runs?')) return;
-        const resp = await fetch('/api/runs/clear', {method: 'POST'});
+        const resp = await fetch('/api/agents/clear', {method: 'POST'});
         const data = await resp.json();
         refreshTree();
         return;
     }
     // 有选中 run，清除当前 run 的上下文（类似 Claude Code /clear）
-    if (!confirm(`Clear context for run ${currentRunId.slice(0,8)}? This will erase conversation history but keep the run.`)) return;
-    const resp = await fetch(`/api/run/${currentRunId}/clear`, {method: 'POST'});
+    if (!confirm(`Clear context for run ${currentAgentId.slice(0,8)}? This will erase conversation history but keep the run.`)) return;
+    const resp = await fetch(`/api/agent/${currentAgentId}/clear`, {method: 'POST'});
     const data = await resp.json();
     if (data.ok) {
         // 重新加载该 run 的事件流
-        loadRunDetail(currentRunId);
+        loadRunDetail(currentAgentId);
     } else {
         alert(data.error || 'Clear failed');
     }
 }
 
 function exportRun(fmt) {
-    if (!currentRunId) { alert('No run selected'); return; }
-    window.open(`/api/run/${currentRunId}/export?format=${fmt}`, '_blank');
+    if (!currentAgentId) { alert('No run selected'); return; }
+    window.open(`/api/agent/${currentAgentId}/export?format=${fmt}`, '_blank');
 }
 
-async function completeAgent(runId, label, taskType) {
+async function completeAgent(agentId, label, taskType) {
     const msg = taskType === 'interactive'
         ? 'Mark this interactive agent as completed? Parent will resume.'
         : 'Force end this agent? The child process will be terminated and the parent will resume.';
     if (!confirm(msg)) return;
-    const resp = await fetch(`/api/run/${runId}/complete`, {method: 'POST'});
+    const resp = await fetch(`/api/agent/${agentId}/complete`, {method: 'POST'});
     const data = await resp.json();
     if (data.ok) { refreshTree(); }
     else { alert(data.error || 'Failed'); }
@@ -1678,15 +2111,15 @@ let workspaceCollapsed = false;
 function toggleWorkspace() {
     workspaceCollapsed = !workspaceCollapsed;
     document.getElementById('workspaceBody').style.display = workspaceCollapsed ? 'none' : '';
-    document.getElementById('workspaceToggle').textContent = workspaceCollapsed ? '▸' : '▾';
+    document.getElementById('workspaceToggle').textContent = workspaceCollapsed ? '+' : '−';
 }
 
-async function refreshWorkspace(runId) {
-    if (!runId) {
+async function refreshWorkspace(agentId) {
+    if (!agentId) {
         document.getElementById('workspacePanel').style.display = 'none';
         return;
     }
-    const resp = await fetch(`/api/run/${runId}/workspace`);
+    const resp = await fetch(`/api/agent/${agentId}/workspace`);
     const data = await resp.json();
     const files = data.files || [];
     const branches = data.branches || [];
@@ -1700,27 +2133,27 @@ async function refreshWorkspace(runId) {
     if (!isOnTaskBranch && branchNames.length > 0) {
         const baseBranch = branches.find(b => b.is_base) || branches[0];
         try {
-            const swResp = await fetch(`/api/run/${runId}/workspace/branch`, {
+            const swResp = await fetch(`/api/run/${agentId}/workspace/branch`, {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({branch: baseBranch.name}),
             });
             const swResult = await swResp.json();
             if (swResult.ok) {
-                const resp2 = await fetch(`/api/run/${runId}/workspace`);
+                const resp2 = await fetch(`/api/agent/${agentId}/workspace`);
                 const data2 = await resp2.json();
-                renderWorkspaceData(runId, data2);
-                refreshDag(runId);
+                renderWorkspaceData(agentId, data2);
+                refreshDag(agentId);
                 return;
             }
         } catch (e) {
             // 切换失败，继续用当前数据渲染
         }
     }
-    renderWorkspaceData(runId, data);
+    renderWorkspaceData(agentId, data);
 }
 
-function renderWorkspaceData(runId, data) {
+function renderWorkspaceData(agentId, data) {
     const files = data.files || [];
     const branches = data.branches || [];
     const currentBranch = data.current_branch || '';
@@ -1761,19 +2194,19 @@ function renderWorkspaceData(runId, data) {
         let html = '';
         // 基准分支
         if (baseBranch) {
-            html += renderBranchItem(baseBranch, baseBranch.name === currentBranch, runId, 0, true);
+            html += renderBranchItem(baseBranch, baseBranch.name === currentBranch, agentId, 0, true);
         }
         // 衍生分支
         const lastIdx = derivedBranches.length - 1;
         derivedBranches.forEach((b, idx) => {
-            html += renderBranchItem(b, b.name === currentBranch, runId, 1, idx === lastIdx);
+            html += renderBranchItem(b, b.name === currentBranch, agentId, 1, idx === lastIdx);
         });
         branchList.innerHTML = html;
     } else {
         branchSection.style.display = 'none';
     }
     
-    panel.style.display = '';
+    panel.style.display = stageView === 'files' ? '' : 'none';
 
     const container = document.getElementById('workspaceFiles');
     if (files.length === 0) {
@@ -1782,7 +2215,7 @@ function renderWorkspaceData(runId, data) {
     container.innerHTML = files.map(f => {
         const size = f.size < 1024 ? `${f.size}B` : `${(f.size/1024).toFixed(1)}K`;
         const mtime = new Date(f.mtime * 1000).toLocaleTimeString();
-        return `<div class="workspace-file" onclick="previewFile('${escapeHtml(runId)}', '${escapeHtml(f.path)}')">
+        return `<div class="workspace-file" onclick="previewFile('${escapeHtml(agentId)}', '${escapeHtml(f.path)}')">
             <span class="wf-icon">${fileIcon(f.path)}</span>
             <span class="wf-name">${escapeHtml(f.path)}</span>
             <span class="wf-meta">${size} · ${mtime}</span>
@@ -1791,10 +2224,10 @@ function renderWorkspaceData(runId, data) {
     }
 }
 
-async function switchBranch(runId, branch) {
+async function switchBranch(agentId, branch) {
     if (!confirm(`切换到分支 \"${branch}\"？工作区文件将被替换。`)) return;
     try {
-        const resp = await fetch(`/api/run/${runId}/workspace/branch`, {
+        const resp = await fetch(`/api/run/${agentId}/workspace/branch`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({branch: branch}),
@@ -1802,21 +2235,21 @@ async function switchBranch(runId, branch) {
         const result = await resp.json();
         if (result.ok) {
             showToast(`已切换到: ${branch}`, 'success');
-            await refreshWorkspace(runId);
-            await refreshDag(runId);
+            await refreshWorkspace(agentId);
+            await refreshDag(agentId);
             const wsId = document.getElementById('workspaceBranch')?.dataset?.taskName || '';
             refreshTree(wsId);
         } else {
             showToast(`切换失败: ${result.error}`, 'error');
-            refreshWorkspace(runId);
+            refreshWorkspace(agentId);
         }
     } catch (e) {
         showToast(`切换失败: ${e.message}`, 'error');
-        refreshWorkspace(runId);
+        refreshWorkspace(agentId);
     }
 }
 
-function renderBranchItem(branch, isCurrent, runId, depth, isBase, isLast) {
+function renderBranchItem(branch, isCurrent, agentId, depth, isBase, isLast) {
     const name = branch.name;
     const display = branch.display || '';
     const icon = isCurrent ? '●' : '○';
@@ -1833,10 +2266,10 @@ function renderBranchItem(branch, isCurrent, runId, depth, isBase, isLast) {
     const tag = isCurrent ? '<span class="branch-tag">当前</span>' : '';
     // 衍生分支显示删除按钮（hover 可见）
     const delBtn = (!isBase && depth > 0)
-        ? `<button class="branch-del-btn" title="删除此分支" onclick="event.stopPropagation(); deleteBranch('${escapeHtml(name)}', '${escapeHtml(runId)}')">×</button>`
+        ? `<button class="branch-del-btn" title="删除此分支" onclick="event.stopPropagation(); deleteBranch('${escapeHtml(name)}', '${escapeHtml(agentId)}')">×</button>`
         : '';
 
-    return `<div class="${cls}" onclick="switchBranch('${escapeHtml(runId)}', '${escapeHtml(name)}')" style="padding-left: ${8 + depth * 18}px">
+    return `<div class="${cls}" onclick="switchBranch('${escapeHtml(agentId)}', '${escapeHtml(name)}')" style="padding-left: ${8 + depth * 18}px">
         <span class="branch-icon">${icon}</span>
         <span class="branch-tree-prefix">${prefix}</span>
         <span class="branch-label">${escapeHtml(label)}</span>
@@ -1846,7 +2279,7 @@ function renderBranchItem(branch, isCurrent, runId, depth, isBase, isLast) {
     </div>`;
 }
 
-async function deleteBranch(branchName, runId) {
+async function deleteBranch(branchName, agentId) {
     if (!confirm(`确定删除分支 "${branchName}"？此操作不可恢复。`)) return;
     try {
         const resp = await fetch(`/api/branch/${encodeURIComponent(branchName)}`, {
@@ -1855,7 +2288,7 @@ async function deleteBranch(branchName, runId) {
         const result = await resp.json();
         if (result.ok) {
             showToast(`已删除分支: ${branchName}`, 'success');
-            refreshWorkspace(runId);
+            refreshWorkspace(agentId);
         } else {
             showToast(`删除失败: ${result.error}`, 'error');
         }
@@ -1879,12 +2312,12 @@ async function createBranch() {
     const name = nameInput.value.trim();
     if (!name) return;
     // 创建分支：在当前 run 的 workspace 中执行 git branch + checkout
-    const runId = currentRunId;
-    if (!runId) return;
+    const agentId = currentAgentId;
+    if (!agentId) return;
     try {
         // 通过分支切换 API，先创建分支（在 git 中已存在则切换，否则需要服务端支持创建）
         // 当前 API 只支持切换已存在的分支，需要服务端扩展
-        const resp = await fetch(`/api/run/${runId}/workspace/branch/create`, {
+        const resp = await fetch(`/api/agent/${agentId}/workspace/branch/create`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({branch: name}),
@@ -1893,7 +2326,7 @@ async function createBranch() {
         if (result.ok) {
             showToast(`已创建并切换到: ${name}`, 'success');
             hideCreateBranch();
-            refreshWorkspace(runId);
+            refreshWorkspace(agentId);
         } else {
             showToast(`创建失败: ${result.error}`, 'error');
         }
@@ -1903,173 +2336,397 @@ async function createBranch() {
 }
 
 // ============================================================
-// DAG 可视化图
+// Orchestration graph — Cytoscape + Dagre
 // ============================================================
-let dagData = null;  // 缓存 DAG 数据
+let dagData = [];
+let graphMode = 'workflow';
+let graphInstance = null;
+let selectedGraphNodeId = null;
 
-async function refreshDag(runId) {
-    console.log('[refreshDag] called with runId=', runId);
+async function refreshDag(agentId) {
     const panel = document.getElementById('dagPanel');
-    if (!runId) { console.log('[refreshDag] no runId, hiding'); panel.style.display = 'none'; return; }
-    let data;
+    if (!agentId) {
+        panel.style.display = 'none';
+        dagData = [];
+        destroyGraph();
+        return;
+    }
+
+    document.getElementById('orchestrationEmpty').style.display = 'none';
+    panel.style.display = stageView === 'topology' ? '' : 'none';
+    let data = null;
+    const taskName = document.getElementById('workspaceBranch')?.dataset?.taskName || '';
     try {
-        const taskName = document.getElementById('workspaceBranch')?.dataset?.taskName || '';
         const url = taskName
-            ? `/api/run/${runId}/dag?workspace_id=${encodeURIComponent(taskName)}`
-            : `/api/run/${runId}/dag`;
-        console.log('[refreshDag] fetching', url);
+            ? `/api/agent/${agentId}/dag?workspace_id=${encodeURIComponent(taskName)}`
+            : `/api/agent/${agentId}/dag`;
         const resp = await fetch(url);
         data = await resp.json();
-        console.log('[refreshDag] response', JSON.stringify({ok: data.ok, stepCount: data.steps?.length}));
-    } catch(e) { console.log('[refreshDag] fetch error', e); panel.style.display = 'none'; return; }
-    if (!data.ok) { console.log('[refreshDag] !ok, hiding'); panel.style.display = 'none'; return; }
+    } catch (e) {
+        data = null;
+    }
 
-    const steps = data.steps || [];
-    const commits = data.step_commits || [];
-    if (steps.length === 0) { panel.style.display = 'none'; return; }
-
-    // 合并 step 状态和 commit 信息
-    dagData = (data.steps || []).map(s => ({
+    dagData = data && data.ok ? (data.steps || []).map(s => ({
         id: s.id,
         name: s.name || s.id,
-        status: s.status,
+        status: normalizeGraphStatus(s.status),
         depends_on: s.depends_on || [],
         prompt: s.prompt || '',
         summary: s.summary || '',
         files: s.files || [],
-        sha: s.sha,
-        date: s.date,
-    }));
+        sha: s.sha || '',
+        date: s.date || '',
+        goal: s.goal || '',
+        supervisor: s.supervisor || '',
+        max_goal_retries: s.max_goal_retries || 5,
+    })) : [];
 
-    panel.style.display = '';
-    document.getElementById('dagCount').textContent = `${dagData.length} 节点`;
-    renderDagGraph();
+    if (dagData.length === 0) dagData = await inferWorkflowFromTemplate(agentId, taskName);
+    renderActiveGraph();
+}
+
+async function inferWorkflowFromTemplate(agentId, taskName = '') {
+    const root = findAgentRoot(agentTreeData, agentId);
+    if (!root) return [];
+    if (!DAG_TEMPLATES.length) await loadDagTemplates();
+    const identity = `${root.prompt || ''} ${root.label || ''} ${taskName || ''}`.toLowerCase();
+    const template = DAG_TEMPLATES.find(item => identity.includes(String(item.id).toLowerCase()));
+    if (!template) return [];
+
+    const agentsByStep = new Map();
+    flattenAgentTree([root]).forEach(({node}) => {
+        if (node.step_id) agentsByStep.set(String(node.step_id), node);
+    });
+    return (template.steps || []).map(step => {
+        const agent = agentsByStep.get(String(step.id));
+        return {
+            id: step.id,
+            name: step.name || step.id,
+            status: normalizeGraphStatus(agent ? agent.status : step.status),
+            depends_on: step.depends_on || [],
+            prompt: step.prompt || '',
+            summary: agent ? (agent.reported_result || agent.label || '') : '',
+            files: [], sha: '', date: '',
+            goal: step.goal || '',
+            supervisor: step.supervisor || '',
+            max_goal_retries: step.max_goal_retries || 5,
+        };
+    });
+}
+
+function normalizeGraphStatus(status) {
+    if (status === 'completed' || status === 'done') return 'done';
+    if (status === 'failed' || status === 'stopped') return 'failed';
+    if (status === 'running' || status === 'waiting' || status === 'plan_pending') return 'running';
+    return 'pending';
+}
+
+function destroyGraph() {
+    if (graphInstance) graphInstance.destroy();
+    graphInstance = null;
+}
+
+function setGraphMode(mode) {
+    graphMode = mode;
+    selectedGraphNodeId = null;
+    document.getElementById('workflowGraphTab').classList.toggle('active', mode === 'workflow');
+    document.getElementById('agentGraphTab').classList.toggle('active', mode === 'agents');
+    renderActiveGraph();
+}
+
+function renderActiveGraph() {
+    if (graphMode === 'agents') renderAgentGraph();
+    else renderDagGraph();
 }
 
 function renderDagGraph() {
-    if (!dagData || dagData.length === 0) return;
-
-    const svg = document.getElementById('dagSvg');
-    const container = document.getElementById('dagGraph');
-    const W = Math.max(container.clientWidth, 800);
-    // 动态高度：每个节点更高以容纳更多信息
-    const nodeW = 180, nodeH = 80;
-    const marginX = 60, marginY = 30;
-    const rowGap = 100;
-
-    const levels = topoLevels(dagData);
-    const maxNodesInLevel = Math.max(...levels.map(l => l.length), 1);
-    const totalW = maxNodesInLevel * (nodeW + 40) - 40;
-    const actualW = Math.max(W, marginX * 2 + totalW);
-    const H = Math.max(220, levels.length * (nodeH + rowGap) + marginY);
-
-    svg.setAttribute('viewBox', `0 0 ${actualW} ${H}`);
-    svg.style.minHeight = H + 'px';
-    svg.style.width = '100%';
-
-    // 计算节点位置（居中）
-    const positions = {};
-    levels.forEach((ids, li) => {
-        const rowW = ids.length * (nodeW + 40) - 40;
-        const x0 = marginX + (actualW - marginX * 2 - rowW) / 2;
-        const y0 = marginY + li * (nodeH + rowGap);
-        ids.forEach((id, ni) => {
-            positions[id] = { x: x0 + ni * (nodeW + 40), y: y0, w: nodeW, h: nodeH };
-        });
-    });
-
-    const statusColors = {
-        done: '#4ade80',
-        running: '#fbbf24',
-        pending: '#9ca3af',
-        failed: '#f87171',
-    };
-
-    let svgHtml = '';
-
-    // 连线
+    const elements = [];
+    const ids = new Set(dagData.map(node => String(node.id)));
     dagData.forEach(node => {
-        if (!positions[node.id]) return;
-        const to = positions[node.id];
-        (node.depends_on || []).forEach(depId => {
-            if (!positions[depId]) return;
-            const from = positions[depId];
-            const x1 = from.x + from.w;
-            const y1 = from.y + from.h / 2;
-            const x2 = to.x;
-            const y2 = to.y + to.h / 2;
-            const mx = (x1 + x2) / 2;
-            const color = statusColors[node.status] || '#9ca3af';
-            svgHtml += `<path d="M${x1} ${y1} C${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}"
-                stroke="${color}" stroke-width="2" fill="none" opacity="0.4"
-                marker-end="url(#a-${node.id}-${depId})"/>`;
-            svgHtml += `<defs><marker id="a-${node.id}-${depId}" markerWidth="8" markerHeight="6"
-                refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="${color}" opacity="0.4"/></marker></defs>`;
-        });
-    });
-
-    // 节点
-    dagData.forEach(node => {
-        const p = positions[node.id];
-        if (!p) return;
-        const color = statusColors[node.status] || '#9ca3af';
-        const anim = node.status === 'running' ? ' class="dag-node-pulse"' : '';
-        const clickable = node.sha ? ' style="cursor:pointer"' : '';
-
-        // 文件列表
-        const fileText = node.files.length > 0
-            ? node.files.slice(0, 3).map(f => f.split('/').pop()).join(', ')
-            : '';
-        // 摘要（截断）
         const summary = node.summary || node.prompt || '';
-        const shortSummary = summary.length > 40 ? summary.slice(0, 40) + '...' : summary;
-
-        const tooltip = [
-            node.name,
-            `状态: ${node.status}`,
-            node.sha ? `commit: ${node.sha.slice(0,8)}` : '',
-            summary ? `产出: ${summary}` : '',
-            fileText ? `文件: ${fileText}` : '',
-            node.sha ? '点击回退到此节点' : '',
-        ].filter(Boolean).join('\n');
-
-        svgHtml += `<g class="dag-node" data-id="${escapeHtml(node.id)}"
-            onclick="dagNodeClick('${escapeHtml(node.id)}')"${clickable}>
-            <rect x="${p.x}" y="${p.y}" width="${p.w}" height="${p.h}" rx="8"
-                fill="var(--bg-elev-2)" stroke="${color}" stroke-width="2"${anim}/>
-            <text x="${p.x + p.w/2}" y="${p.y + 20}" text-anchor="middle"
-                fill="var(--text)" font-size="13" font-weight="600">${escapeHtml(node.name)}</text>
-            <text x="${p.x + p.w/2}" y="${p.y + 38}" text-anchor="middle"
-                fill="${color}" font-size="10">${node.status}</text>
-            <text x="${p.x + p.w/2}" y="${p.y + 54}" text-anchor="middle"
-                fill="var(--text-4)" font-size="9">${escapeHtml(shortSummary)}</text>
-            ${fileText ? `<text x="${p.x + p.w/2}" y="${p.y + 68}" text-anchor="middle"
-                fill="var(--accent)" font-size="9">📄 ${escapeHtml(fileText)}</text>` : ''}
-            <title>${tooltip}</title>
-        </g>`;
+        elements.push({ data: {
+            id: String(node.id),
+            label: `${node.name}\n${node.status.toUpperCase()}`,
+            name: node.name,
+            status: normalizeGraphStatus(node.status),
+            rawStatus: node.status,
+            prompt: node.prompt,
+            summary,
+            files: node.files,
+            sha: node.sha,
+            goal: node.goal || '',
+            supervisor: node.supervisor || '',
+            retryBudget: node.max_goal_retries || 5,
+            policyKind: 'step',
+            kind: 'workflow',
+        }});
+        (node.depends_on || []).forEach(depId => {
+            if (ids.has(String(depId))) {
+                elements.push({ data: {
+                    id: `step:${depId}->${node.id}`,
+                    source: String(depId),
+                    target: String(node.id),
+                    status: normalizeGraphStatus(node.status),
+                }});
+            }
+        });
+        if (node.goal) {
+            elements.push({data: {
+                id: `step-loop:${node.id}`, source: String(node.id), target: String(node.id),
+                status: 'running', policy: 'loop', label: `↻ ${node.max_goal_retries || 5}×`,
+            }});
+        }
+        if (node.supervisor) {
+            const supervisorId = `step-supervisor:${node.id}`;
+            elements.push({data: {
+                id: supervisorId, label: 'Supervisor', name: `Supervisor · ${node.name}`,
+                status: node.status === 'done' ? 'done' : 'running', rawStatus: 'monitoring',
+                model: 'Inherited', role: 'SUPERVISOR', goal: '', supervisor: node.supervisor,
+                retryBudget: node.max_goal_retries || 5, quality: 'enabled', policyKind: 'supervisor',
+                childCount: 0, kind: 'agent', current: 'no',
+            }});
+            elements.push({data: {
+                id: `step-supervision:${node.id}`, source: supervisorId, target: String(node.id),
+                status: 'running', policy: 'supervision', label: 'monitors',
+            }});
+        }
     });
+    mountGraph(elements, 'TB');
+    updateGraphChrome(dagData, 'workflow');
+}
 
-    svg.innerHTML = svgHtml;
+function flattenAgentTree(nodes, parentId = null, result = []) {
+    (nodes || []).forEach(node => {
+        result.push({ node, parentId });
+        flattenAgentTree(node.children || [], node.agent_id, result);
+    });
+    return result;
+}
+
+function findAgentRoot(nodes, agentId) {
+    for (const root of nodes || []) {
+        if (flattenAgentTree([root]).some(item => item.node.agent_id === agentId)) return root;
+    }
+    return null;
+}
+
+function renderAgentGraph() {
+    const root = findAgentRoot(agentTreeData, currentAgentId);
+    const flat = root ? flattenAgentTree([root]) : [];
+    const elements = [];
+    flat.forEach(({node, parentId}) => {
+        const name = node.label || node.prompt || node.agent_id.slice(0, 8);
+        const shortName = name.length > 28 ? name.slice(0, 28) + '…' : name;
+        const role = node.is_root ? 'ROOT' : (node.task_type || 'AGENT').toUpperCase();
+        elements.push({ data: {
+            id: node.agent_id,
+            label: `${shortName}\n${role} · ${String(node.status || 'pending').toUpperCase()}`,
+            name,
+            status: normalizeGraphStatus(node.status),
+            rawStatus: node.status || 'pending',
+            model: node.model || 'Default',
+            role,
+            goal: node.goal || '',
+            supervisor: node.supervisor || '',
+            retryBudget: node.max_goal_retries || 5,
+            quality: node.goal || node.supervisor ? 'enabled' : 'off',
+            policyKind: 'agent',
+            childCount: (node.children || []).length,
+            kind: 'agent',
+            current: node.agent_id === currentAgentId ? 'yes' : 'no',
+        }});
+        if (parentId) elements.push({ data: {
+            id: `agent:${parentId}->${node.agent_id}`,
+            source: parentId,
+            target: node.agent_id,
+            status: normalizeGraphStatus(node.status),
+        }});
+        if (node.goal) {
+            elements.push({data: {
+                id: `agent-loop:${node.agent_id}`, source: node.agent_id, target: node.agent_id,
+                status: 'running', policy: 'loop', label: `↻ ${node.max_goal_retries || 5}×`,
+            }});
+        }
+        const hasReviewChild = (node.children || []).some(child => child.task_type === 'supervisor');
+        if (node.supervisor && !hasReviewChild) {
+            const reviewerId = `review:${node.agent_id}`;
+            elements.push({data: {
+                id: reviewerId, label: 'Supervisor', name: `Supervisor · ${name}`,
+                status: 'running', rawStatus: 'observing', model: node.model || 'Default',
+                role: 'SUPERVISOR', goal: '', supervisor: node.supervisor,
+                retryBudget: node.max_goal_retries || 5, quality: 'enabled', policyKind: 'supervisor',
+                childCount: 0, kind: 'agent', current: 'no',
+            }});
+            elements.push({data: {
+                id: `agent-supervision:${node.agent_id}`, source: reviewerId, target: node.agent_id,
+                status: 'running', policy: 'supervision', label: 'monitors',
+            }});
+        }
+    });
+    mountGraph(elements, 'TB');
+    updateGraphChrome(flat.map(item => item.node), 'agents');
+}
+
+function mountGraph(elements, rankDir) {
+    const container = document.getElementById('dagGraph');
+    destroyGraph();
+    let empty = document.getElementById('graphEmpty');
+    if (!empty) {
+        empty = document.createElement('div');
+        empty.id = 'graphEmpty';
+        empty.className = 'graph-empty';
+        empty.innerHTML = '<span class="graph-empty-mark"></span><strong>Topology unavailable</strong><span>当前任务还没有关系数据</span>';
+        container.appendChild(empty);
+    }
+    if (!elements.some(el => !el.data.source)) {
+        empty.style.display = 'flex';
+        const title = empty.querySelector('strong');
+        const hint = empty.querySelector('span:last-child');
+        if (graphMode === 'workflow') {
+            title.textContent = 'No workflow on this task';
+            hint.textContent = '该任务不是由 DAG 模板启动，因此没有 Workflow 节点。可切换到 Agent network。';
+        } else {
+            title.textContent = 'No agent relationships yet';
+            hint.textContent = '当前 Agent 尚未创建子 Agent 或 Supervisor。';
+        }
+        resetInspector();
+        return;
+    }
+    empty.style.display = 'none';
+    if (!window.cytoscape) {
+        empty.style.display = 'flex';
+        empty.querySelector('strong').textContent = '图引擎加载失败';
+        return;
+    }
+    if (window.cytoscapeDagre) cytoscape.use(window.cytoscapeDagre);
+    graphInstance = cytoscape({
+        container,
+        elements,
+        minZoom: 0.35,
+        maxZoom: 2,
+        wheelSensitivity: 0.18,
+        boxSelectionEnabled: false,
+        autoungrabify: false,
+        style: [
+            { selector: 'node', style: {
+                'width': 196, 'height': 72, 'shape': 'round-rectangle',
+                'background-color': '#171b23', 'border-width': 1.5,
+                'border-color': '#3a4252', 'label': 'data(label)',
+                'color': '#eef1f6', 'font-family': 'Inter, Segoe UI, sans-serif',
+                'font-size': 11, 'font-weight': 600, 'text-wrap': 'wrap',
+                'text-max-width': 166, 'text-valign': 'center', 'text-halign': 'center',
+                'line-height': 1.55, 'overlay-opacity': 0,
+            }},
+            { selector: 'node[status="running"]', style: {'border-color': '#f4ba5b', 'border-width': 2, 'shadow-color': '#f4ba5b', 'shadow-opacity': .12, 'shadow-blur': 14}},
+            { selector: 'node[status="done"]', style: {'border-color': '#4fd1a1'}},
+            { selector: 'node[status="failed"]', style: {'border-color': '#ff7185'}},
+            { selector: 'node[quality="enabled"]', style: {'border-style': 'double', 'border-width': 4}},
+            { selector: 'node[policyKind="supervisor"]', style: {'shape': 'diamond', 'width': 76, 'height': 76, 'background-color': '#242942', 'border-color': '#8292ff', 'color': '#dce1ff', 'text-max-width': 58, 'font-size': 9}},
+            { selector: 'node[current="yes"]', style: {'border-color': '#8292ff', 'border-width': 3, 'background-color': '#22283a'}},
+            { selector: 'node:selected', style: {'border-color': '#aab4ff', 'border-width': 3, 'background-color': '#262d40'}},
+            { selector: 'node.focus', style: {'border-color': '#aab4ff', 'border-width': 3, 'shadow-color': '#8292ff', 'shadow-opacity': .18, 'shadow-blur': 18}},
+            { selector: '.faded', style: {'opacity': .16}},
+            { selector: 'edge', style: {
+                'width': 1.5, 'line-color': '#465064', 'target-arrow-color': '#69758b',
+                'target-arrow-shape': 'triangle', 'curve-style': 'bezier',
+                'arrow-scale': .8, 'opacity': .78, 'overlay-opacity': 0,
+            }},
+            { selector: 'edge[status="running"]', style: {'line-color': '#a27d43', 'target-arrow-color': '#f4ba5b', 'width': 2}},
+            { selector: 'edge[status="done"]', style: {'line-color': '#3a7966', 'target-arrow-color': '#4fd1a1'}},
+            { selector: 'edge[status="failed"]', style: {'line-color': '#8b4755', 'target-arrow-color': '#ff7185'}},
+            { selector: 'edge[policy="loop"]', style: {'line-color': '#8292ff', 'target-arrow-color': '#8292ff', 'line-style': 'dashed', 'label': 'data(label)', 'font-size': 8, 'color': '#aab4ff', 'text-background-color': '#11141b', 'text-background-opacity': 1, 'text-background-padding': 3}},
+            { selector: 'edge[policy="supervision"]', style: {'line-color': '#8292ff', 'target-arrow-color': '#8292ff', 'line-style': 'dotted', 'label': 'data(label)', 'font-size': 8, 'color': '#aab4ff'}},
+        ],
+        layout: {
+            name: 'dagre', rankDir, rankSep: rankDir === 'TB' ? 70 : 100,
+            nodeSep: 44, edgeSep: 24, padding: 36, animate: false,
+        },
+    });
+    graphInstance.on('tap', 'node', event => selectGraphNode(event.target));
+    graphInstance.on('tap', event => {
+        if (event.target === graphInstance) resetInspector();
+    });
+    requestAnimationFrame(() => {
+        if (!graphInstance) return;
+        graphInstance.fit(undefined, 42);
+    });
+}
+
+function selectGraphNode(node) {
+    selectedGraphNodeId = node.id();
+    if (graphInstance) {
+        graphInstance.elements().removeClass('focus').addClass('faded');
+        const neighborhood = node.closedNeighborhood();
+        neighborhood.removeClass('faded');
+        node.addClass('focus');
+    }
+    const data = node.data();
+    const incoming = node.incomers('node').map(n => n.data('name') || n.id());
+    const outgoing = node.outgoers('node').map(n => n.data('name') || n.id());
+    const inspector = document.getElementById('graphInspector');
+    const detail = data.summary || data.prompt || '暂无补充说明';
+    const meta = data.kind === 'agent'
+        ? [['角色', data.role], ['模型', data.model], ['状态', data.rawStatus], ['子 Agent', data.childCount]]
+        : [['节点 ID', data.id], ['状态', data.rawStatus], ['依赖', incoming.length], ['下游', outgoing.length]];
+    const relation = (items, emptyText) => items.length
+        ? items.map(item => `<span class="inspector-relation">${escapeHtml(item)}</span>`).join('')
+        : `<span class="inspector-muted">${emptyText}</span>`;
+    const action = data.kind === 'agent'
+        ? `<button class="inspector-action" onclick="viewAgent('${escapeHtml(data.id)}')">打开 Agent 会话</button>`
+        : (data.sha ? `<button class="inspector-action danger" onclick="dagNodeClick('${escapeHtml(data.id)}')">从此节点创建回退分支</button>` : '');
+    inspector.innerHTML = `
+        <div class="inspector-kicker">${data.kind === 'agent' ? 'AGENT' : 'WORKFLOW STEP'}</div>
+        <div class="inspector-title">${escapeHtml(data.name || data.id)}</div>
+        <span class="inspector-status status-${normalizeGraphStatus(data.rawStatus)}">${escapeHtml(data.rawStatus)}</span>
+        <div class="inspector-meta">${meta.map(([key, value]) => `<div><span>${key}</span><strong>${escapeHtml(String(value ?? '-'))}</strong></div>`).join('')}</div>
+        <div class="inspector-section"><label>说明</label><p>${escapeHtml(detail)}</p></div>
+        ${data.goal ? `<div class="inspector-section quality-detail"><label>COMPLETION LOOP · ${data.retryBudget || 5}× BUDGET</label><p>${escapeHtml(data.goal)}</p></div>` : ''}
+        ${data.supervisor ? `<div class="inspector-section quality-detail"><label>SUPERVISOR · EXECUTION WATCH BRIEF</label><p>${escapeHtml(data.supervisor)}</p></div>` : ''}
+        <div class="inspector-section"><label>上游</label><div class="inspector-relations">${relation(incoming, '无')}</div></div>
+        <div class="inspector-section"><label>下游</label><div class="inspector-relations">${relation(outgoing, '无')}</div></div>
+        ${action}`;
+}
+
+function resetInspector() {
+    selectedGraphNodeId = null;
+    if (graphInstance) graphInstance.elements().removeClass('faded focus');
+    const inspector = document.getElementById('graphInspector');
+    inspector.innerHTML = '<div class="inspector-kicker">SELECTED NODE</div><div class="inspector-empty">选择拓扑节点，查看职责、状态以及上下游关系。</div>';
+}
+
+function updateGraphChrome(items, mode) {
+    const normalized = items.map(item => normalizeGraphStatus(item.status));
+    const counts = ['running', 'pending', 'done', 'failed'].reduce((acc, status) => {
+        acc[status] = normalized.filter(value => value === status).length;
+        return acc;
+    }, {});
+    document.getElementById('dagCount').textContent = `${items.length} ${mode === 'agents' ? 'agents' : 'steps'}`;
+    document.getElementById('graphSummary').innerHTML = `
+        <span class="graph-summary-label">${mode === 'agents' ? 'COLLABORATION MAP' : 'EXECUTION FLOW'}</span>
+        <span class="graph-stat running"><b>${counts.running}</b> 运行中</span>
+        <span class="graph-stat pending"><b>${counts.pending}</b> 待处理</span>
+        <span class="graph-stat done"><b>${counts.done}</b> 已完成</span>
+        ${counts.failed ? `<span class="graph-stat failed"><b>${counts.failed}</b> 异常</span>` : ''}`;
+    resetInspector();
+}
+
+function fitGraph() {
+    if (graphInstance) graphInstance.animate({fit: {eles: graphInstance.elements(), padding: 44}, duration: 240});
+}
+
+function resetGraphZoom() {
+    if (!graphInstance) return;
+    graphInstance.animate({zoom: 1, center: {eles: graphInstance.elements()}, duration: 220});
 }
 
 function dagNodeClick(stepId) {
-    if (!currentRunId) return;
+    if (!currentAgentId) return;
     const node = dagData.find(s => s.id === stepId);
     if (!node || !node.sha) {
-        showToast(`节点 ${stepId} 尚未完成，无法回退`);
+        showToast(`节点 ${stepId} 尚未生成可回退版本`);
         return;
     }
-    // 找出受影响的节点
-    const affected = getAffectedSteps(stepId);
-    const affectedNames = affected.map(s => s.name || s.id).join(' → ');
-    if (!confirm(
-        `回退 Agent 到 "${stepId}" (${node.name})？\n\n` +
-        `⚠️ git reset --hard 到 ${node.sha.slice(0,8)}\n` +
-        `⚠️ 该节点及之后的所有 commit 将被丢弃\n` +
-        `⚠️ 受影响的 DAG 节点: ${affectedNames}\n\n` +
-        `此操作不可撤销。`
-    )) return;
-    checkoutStep(currentRunId, stepId);
+    checkoutStep(currentAgentId, stepId);
 }
 
 // 获取该 step 及所有下游节点
@@ -2123,13 +2780,17 @@ function toggleDag() {
     const toggle = document.getElementById('dagToggle');
     const collapsed = body.style.display === 'none';
     body.style.display = collapsed ? '' : 'none';
-    toggle.textContent = collapsed ? '▾' : '▸';
+    toggle.textContent = collapsed ? '−' : '+';
+    if (collapsed && graphInstance) requestAnimationFrame(() => {
+        graphInstance.resize();
+        fitGraph();
+    });
 }
 
-async function checkoutStep(runId, stepId) {
+async function checkoutStep(agentId, stepId) {
     if (!confirm(`确定回退到 step "${stepId}"？\n将从该 commit 创建新分支，原分支保持不变。`)) return;
     try {
-        const resp = await fetch(`/api/run/${runId}/dag/checkout`, {
+        const resp = await fetch(`/api/agent/${agentId}/dag/checkout`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({step_id: stepId, rerun_downstream: true})
@@ -2138,8 +2799,8 @@ async function checkoutStep(runId, stepId) {
         if (data.error) { showToast(`回退失败: ${data.error}`, 'error'); return; }
         const branchInfo = data.branch ? `（新分支: ${data.branch}）` : '';
         showToast(`已回退到 step ${stepId}${branchInfo}`, 'success');
-        await refreshWorkspace(runId);
-        await refreshDag(runId);
+        await refreshWorkspace(agentId);
+        await refreshDag(agentId);
         const wsId = document.getElementById('workspaceBranch')?.dataset?.taskName || '';
         refreshTree(wsId);
     } catch (e) {
@@ -2153,8 +2814,8 @@ function fileIcon(path) {
     return map[ext] || '📄';
 }
 
-async function previewFile(runId, path) {
-    const resp = await fetch(`/api/run/${runId}/workspace/file?path=${encodeURIComponent(path)}`);
+async function previewFile(agentId, path) {
+    const resp = await fetch(`/api/agent/${agentId}/workspace/file?path=${encodeURIComponent(path)}`);
     const data = await resp.json();
     if (data.error) { alert(data.error); return; }
 
@@ -2165,11 +2826,13 @@ async function previewFile(runId, path) {
     } else {
         content.textContent = data.content;
     }
+    document.getElementById('workspacePreviewEmpty').style.display = 'none';
     document.getElementById('workspacePreview').style.display = '';
 }
 
 function closePreview() {
     document.getElementById('workspacePreview').style.display = 'none';
+    document.getElementById('workspacePreviewEmpty').style.display = 'flex';
 }
 
 let _treeRefreshPaused = false;
@@ -2180,8 +2843,8 @@ setInterval(() => { if (!_treeRefreshPaused) refreshTree(); }, 3000);
 // ============================================================
 const _runLabels = {};  // run_id -> label，本地缓存
 
-function renameRun(runId) {
-    const nodeEl = document.querySelector(`.tree-node[data-run-id="${runId}"]`);
+function renameAgent(agentId) {
+    const nodeEl = document.querySelector(`.tree-node[data-agent-id="${agentId}"]`);
     const promptEl = nodeEl ? nodeEl.querySelector('.tree-node-prompt') : null;
     if (!promptEl) return;
     const current = promptEl.textContent;
@@ -2204,7 +2867,7 @@ function renameRun(runId) {
         span.textContent = newLabel || current;
         input.replaceWith(span);
         if (newLabel === current) return;
-        fetch(`/api/run/${runId}/label`, {
+        fetch(`/api/agent/${agentId}/label`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ label: newLabel }),

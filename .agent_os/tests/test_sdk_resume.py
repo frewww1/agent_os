@@ -1,52 +1,43 @@
 """测试 SDK 多轮对话（session resume）。"""
-import sys, os, json, queue, threading, time
+import sys, os, threading, json
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-from backend import CodeBuddySDKBackend, FakeProcess
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from agent_os.src.agent.codebuddy_sdk import CodeBuddySDKBackend, SDKHandle
 
 
 def run_sdk(prompt, resume_session=None, session_id=None, system_prompt=None):
-    """运行一次 SDK 调用，返回 (lines, session_id)。"""
+    """运行一次 SDK 调用，返回 (events, session_id)。"""
     backend = CodeBuddySDKBackend()
-    q = queue.Queue()
-    stop = threading.Event()
-    backend._output_queue = q
-    backend._stop_event = stop
-    fp = FakeProcess(q, stop)
+    handle = SDKHandle(session_id=session_id or "")
 
     def _run():
         try:
             backend._call_sdk(
+                handle=handle,
                 prompt=prompt, model="", session_id=session_id,
                 resume_session=resume_session, system_prompt=system_prompt,
-                mcp_config=None, cwd=os.getcwd(), env=None, stop=stop,
+                cwd=os.getcwd(), env=None, stop=handle._stop,
             )
         except Exception as e:
-            q.put(json.dumps({"type": "error", "error": str(e)}) + "\n")
+            backend._emit_event(handle, "error", error=str(e))
         finally:
-            stop.set()
-            fp._returncode = 0
-            q.put(None)
+            handle._stop.set()
+            handle._events_queue.put(None)
 
     t = threading.Thread(target=_run, daemon=True)
+    handle._thread = t
     t.start()
 
-    lines = []
+    events = []
     extracted_session = None
-    for line in iter(fp.stdout.readline, ""):
-        stripped = line.strip()
-        if stripped:
-            lines.append(stripped)
-            try:
-                obj = json.loads(stripped)
-                if obj.get("type") == "result":
-                    extracted_session = obj.get("session_id", "")
-                elif obj.get("type") == "system" and obj.get("subtype") == "init":
-                    extracted_session = obj.get("session_id", "") or extracted_session
-            except json.JSONDecodeError:
-                pass
+    for ev in backend.stream(handle):
+        events.append(ev)
+        if ev.get("kind") == "result":
+            extracted_session = ev.get("session_id", "")
+        elif ev.get("kind") == "system":
+            extracted_session = ev.get("session_id", "") or extracted_session
     t.join(timeout=5)
-    return lines, extracted_session
+    return events, extracted_session
 
 
 def test_session_resume():
@@ -54,43 +45,30 @@ def test_session_resume():
 
     # Round 1: 让 agent 记住一个数字
     print("\n[Round 1] Asking to remember a number...")
-    lines1, session_id = run_sdk(
+    events1, session_id = run_sdk(
         prompt="Remember this number: 42. Just reply 'OK, remembered 42.'",
         system_prompt="You are concise. Reply exactly as requested.",
     )
     assert session_id, "No session_id from round 1"
     print(f"  Session ID: {session_id[:13]}...")
-    for l in lines1:
-        obj = json.loads(l)
-        if obj.get("type") == "assistant":
-            for b in obj.get("message", {}).get("content", []):
-                if b.get("type") == "text":
-                    print(f"  [Agent] {b['text'][:100]}")
+    for ev in events1:
+        if ev.get("kind") == "text":
+            print(f"  [Agent] {ev.get('text', '')[:100]}")
 
     # Round 2: resume 同一个 session，问它记住的数字
     print(f"\n[Round 2] Resuming session {session_id[:13]}..., asking what number was remembered")
-    lines2, _ = run_sdk(
+    events2, _ = run_sdk(
         prompt="What number did I ask you to remember earlier? Reply with just the number.",
         resume_session=session_id,
     )
-    for l in lines2:
-        obj = json.loads(l)
-        if obj.get("type") == "assistant":
-            for b in obj.get("message", {}).get("content", []):
-                if b.get("type") == "text":
-                    print(f"  [Agent] {b['text'][:100]}")
+    for ev in events2:
+        if ev.get("kind") == "text":
+            print(f"  [Agent] {ev.get('text', '')[:100]}")
 
     # 检查是否提到 42
-    all_text = ""
-    for l in lines2:
-        try:
-            obj = json.loads(l)
-            if obj.get("type") == "assistant":
-                for b in obj.get("message", {}).get("content", []):
-                    if b.get("type") == "text":
-                        all_text += b["text"]
-        except json.JSONDecodeError:
-            pass
+    all_text = "".join(
+        ev.get("text", "") for ev in events2 if ev.get("kind") == "text"
+    )
     if "42" in all_text:
         print("\n[PASS] Session resume works! Agent remembered 42.")
     else:

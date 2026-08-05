@@ -46,8 +46,27 @@ import json
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ..core import dag_planner as dp  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# 直接导入 planner 子模块，避免触发 core/__init__.py 中的 AgentOS 依赖链
+import importlib
+import importlib.util
+_dp_spec = importlib.util.spec_from_file_location(
+    "core.dag.planner",
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                 "core", "dag", "planner.py"))
+_dp = importlib.util.module_from_spec(_dp_spec)
+_dp_spec.loader.exec_module(_dp)
+# 将 planner 中的函数拉入当前命名空间
+load_dag = _dp.load_dag
+save_dag = _dp.save_dag
+topo_order = _dp.topo_order
+ready_steps = _dp.ready_steps
+get_descendants = _dp.get_descendants
+reset_steps = _dp.reset_steps
+add_step = _dp.add_step
+mark_running = _dp.mark_running
+mark_done = _dp.mark_done
+mark_failed = _dp.mark_failed
 
 
 def _workspace() -> str:
@@ -56,7 +75,7 @@ def _workspace() -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Operate dag.json for orchestrator")
+    parser = argparse.ArgumentParser(description="Operate dag.json for Agent OS")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--ready", action="store_true",
                        help="print ready steps as JSON array")
@@ -75,12 +94,12 @@ def main() -> None:
     args = parser.parse_args()
 
     ws = _workspace()
-    dag = dp.load_dag(ws)
+    dag = load_dag(ws)
     steps = dag.get("steps", [])
     by_id = {s["id"]: s for s in steps}
 
     if args.ready:
-        ids = dp.ready_steps(steps)
+        ids = ready_steps(steps)
         out = [{
             "id": by_id[i]["id"],
             "step_id": by_id[i]["id"],  # 提醒调度 agent：spawn task 必须带 step_id
@@ -90,11 +109,12 @@ def main() -> None:
             "type": by_id[i].get("type", "generative"),
             "goal": by_id[i].get("goal"),
             "supervisor": by_id[i].get("supervisor"),
+            "expected_outputs": by_id[i].get("expected_outputs", ""),
         } for i in ids]
         print(json.dumps(out, ensure_ascii=False))
 
     elif args.status:
-        order = dp.topo_order(steps)  # 拓扑序 + 顺带验环
+        order = topo_order(steps)  # 拓扑序 + 顺带验环
         out = [{
             "id": by_id[i]["id"],
             "name": by_id[i].get("name", ""),
@@ -105,18 +125,18 @@ def main() -> None:
 
     elif args.mark_done:
         sid = args.mark_done
-        if not dp.mark_done(steps, sid):
+        if not mark_done(steps, sid):
             print(f"[dag] unknown step: {sid}", file=sys.stderr)
             sys.exit(1)
-        dp.save_dag(ws, dag)
+        save_dag(ws, dag)
         print(f"[dag] marked done: {sid}")
 
     elif args.mark_failed:
         sid = args.mark_failed
-        if not dp.mark_failed(steps, sid):
+        if not mark_failed(steps, sid):
             print(f"[dag] unknown step: {sid}", file=sys.stderr)
             sys.exit(1)
-        dp.save_dag(ws, dag)
+        save_dag(ws, dag)
         print(f"[dag] marked failed: {sid}")
 
     elif args.rerun:
@@ -124,9 +144,9 @@ def main() -> None:
         if sid not in by_id:
             print(f"[dag] unknown step: {sid}", file=sys.stderr)
             sys.exit(1)
-        affected = dp.get_descendants(steps, sid)  # [sid] + 下游，拓扑序
-        dp.reset_steps(steps, affected)
-        dp.save_dag(ws, dag)
+        affected = get_descendants(steps, sid)  # [sid] + 下游，拓扑序
+        reset_steps(steps, affected)
+        save_dag(ws, dag)
         print(json.dumps(affected, ensure_ascii=False))
 
     elif args.add_step:
@@ -139,11 +159,11 @@ def main() -> None:
             print("[dag] --add-step must be a JSON object", file=sys.stderr)
             sys.exit(1)
         try:
-            added = dp.add_step(steps, new_step)
+            added = add_step(steps, new_step)
         except ValueError as e:
             print(f"[dag] add-step rejected: {e}", file=sys.stderr)
             sys.exit(1)
-        dp.save_dag(ws, dag)
+        save_dag(ws, dag)
         print(json.dumps(added, ensure_ascii=False))
 
     elif args.reset_to:
@@ -151,9 +171,9 @@ def main() -> None:
         if sid not in by_id:
             print(f"[dag] unknown step: {sid}", file=sys.stderr)
             sys.exit(1)
-        affected = dp.get_descendants(steps, sid)  # [sid] + 下游，拓扑序
-        dp.reset_steps(steps, affected)
-        dp.save_dag(ws, dag)
+        affected = get_descendants(steps, sid)  # [sid] + 下游，拓扑序
+        reset_steps(steps, affected)
+        save_dag(ws, dag)
         print(json.dumps(affected, ensure_ascii=False))
 
 
