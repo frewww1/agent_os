@@ -16,7 +16,8 @@ DAG_TEMPLATES_DIR = Path(__file__).parent.parent.parent / "dag_templates"
 
 
 def _resolve_workspace_dir(workspace_id: str) -> Path | None:
-    workspaces_dir = Path(__file__).parent.parent.parent / "workspaces"
+    root = get_project_root()
+    workspaces_dir = (root / "workspaces") if root else Path(__file__).parent.parent.parent / "workspaces"
     ws_dir = workspaces_dir / workspace_id
     if not ws_dir.is_dir():
         for d in workspaces_dir.iterdir():

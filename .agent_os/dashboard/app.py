@@ -28,10 +28,27 @@ async def index(request: Request):
     return templates.TemplateResponse(request=request, name="index.html", context={})
 
 
+@app.get("/api/info")
+async def info():
+    """运行信息：当前服务的工作根目录（project_root）等，供前端展示。"""
+    if agent_os is None:
+        return {"ok": False, "error": "not initialized"}
+    return {
+        "ok": True,
+        "project_root": agent_os.project_root,
+        "port": agent_os.port,
+        "cli": agent_os.cli_command,
+        "backend": type(agent_os._backend).__name__,
+        "default_model": agent_os.default_model,
+        "agents": len(agent_os.agents),
+    }
+
+
 # 注册子路由
-from .routers import runs, workspace, dag, spawn, export
+from .routers import runs, workspace, dag, spawn, export, root
 app.include_router(runs.router)
 app.include_router(workspace.router)
 app.include_router(dag.router)
 app.include_router(spawn.router)
 app.include_router(export.router)
+app.include_router(root.router)

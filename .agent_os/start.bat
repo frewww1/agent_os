@@ -1,6 +1,8 @@
 @echo off
 chcp 65001 >nul
 
+rem 记住用户运行目录（启动服务后作为 project_root），避免 cd 后丢失
+set "USER_ROOT=%cd%"
 cd /d "%~dp0"
 
 :: Check venv
@@ -36,5 +38,5 @@ echo.
 :: Activate venv and start
 call ..\.venv\Scripts\activate.bat
 set AGENT_OS_BACKEND=%BACKEND%
-python main.py --cli "%CLI_NAME%" --backend "%BACKEND%"
+python main.py --root "%USER_ROOT%" --cli "%CLI_NAME%" --backend "%BACKEND%"
 pause

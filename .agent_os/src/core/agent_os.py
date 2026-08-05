@@ -4,6 +4,8 @@ import json as _json
 import logging
 import os
 import re
+import shutil
+import subprocess
 import threading
 from datetime import datetime
 from typing import AsyncGenerator
@@ -70,9 +72,13 @@ class AgentOS:
 
 
 
-        self._state_dir = os.path.join(PROJECT_ROOT, "state")
+        # state 跟随 project_root（CLI 运行目录），实现多项目状态隔离
         os.makedirs(self._state_dir, exist_ok=True)
+        self._migrate_legacy_state()
+        self._ensure_agent_os_link()
 
+        self._persist_lock = threading.Lock()
+        self._root_history = self._load_root_history()
         load_agents_from_disk(self)
         self._save_task = threading.Thread(
             target=self._periodic_save_worker, daemon=True, name="persist-worker"
@@ -81,6 +87,114 @@ class AgentOS:
 
         self._idle_timeout_sec = 20 * 60
         self._timeout_task = self._loop.create_task(self._timeout_watcher())
+
+    @property
+    def _state_dir(self) -> str:
+        """state 目录动态跟随 project_root —— 切换目录时无需重建实例。"""
+        return os.path.join(self.project_root, "state")
+
+    # region 部署解耦
+
+    def _migrate_legacy_state(self) -> None:
+        """旧版本 state 固定在安装目录（PROJECT_ROOT/state），新版本跟随
+        project_root。若新位置尚无数据而旧位置有，一次性复制迁移。"""
+        try:
+            new_db = os.path.join(self._state_dir, "agents.db")
+            old_db = os.path.join(PROJECT_ROOT, "state", "agents.db")
+            if os.path.isfile(old_db) and not os.path.isfile(new_db):
+                os.makedirs(self._state_dir, exist_ok=True)
+                shutil.copy2(old_db, new_db)
+                logger.info(f"migrated legacy state db: {old_db} -> {new_db}")
+        except Exception as e:
+            logger.warning(f"legacy state migration failed: {e}")
+
+    def _ensure_agent_os_link(self) -> None:
+        """全局部署模式下，project_root 下可能没有 .agent_os 目录，而 agent
+        system prompt 中硬编码 `python .agent_os/report.py` 等相对路径调用。
+        若 project_root/.agent_os 不存在，则创建 junction 指向安装目录
+        （PROJECT_ROOT），使相对路径调用自动可用。"""
+        try:
+            link = os.path.join(self.project_root, ".agent_os")
+            if os.path.isdir(link):
+                return
+            if os.path.exists(link):
+                logger.warning(f"{link} exists but is not a directory; skip junction")
+                return
+            install_dir = os.path.abspath(PROJECT_ROOT)
+            os.makedirs(os.path.dirname(link), exist_ok=True)
+            if os.name == "nt":
+                res = subprocess.run(
+                    ["cmd", "/c", "mklink", "/J", link, install_dir],
+                    capture_output=True, text=True)
+            else:
+                res = subprocess.run(
+                    ["ln", "-s", install_dir, link],
+                    capture_output=True, text=True)
+            if res.returncode == 0:
+                logger.info(f"created .agent_os junction/symlink: {link} -> {install_dir}")
+            else:
+                logger.warning(f"failed to create .agent_os link: {res.stderr.strip()}")
+        except Exception as e:
+            logger.warning(f"_ensure_agent_os_link failed: {e}")
+
+    def _load_root_history(self) -> list[str]:
+        """读取切换历史（全局，存安装目录 state，不随 project_root 变化）。"""
+        try:
+            p = os.path.join(PROJECT_ROOT, "state", "root_history.json")
+            if os.path.isfile(p):
+                with open(p, encoding="utf-8") as f:
+                    data = _json.load(f)
+                return [str(x) for x in data if isinstance(x, str)][:10]
+        except Exception as e:
+            logger.warning(f"load root history failed: {e}")
+        return []
+
+    def _save_root_history(self) -> None:
+        try:
+            d = os.path.join(PROJECT_ROOT, "state")
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, "root_history.json"), "w", encoding="utf-8") as f:
+                _json.dump(self._root_history, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning(f"save root history failed: {e}")
+
+    def root_candidates(self) -> list[str]:
+        """切换候选目录：当前 root + 最近历史 + 常见项目源下含 .git/.codebuddy 的目录。"""
+        seen: set[str] = set()
+        cands: list[str] = []
+
+        def add(p: str) -> None:
+            p = os.path.abspath(os.path.expanduser(p))
+            key = os.path.normcase(p)  # Windows 路径大小写不敏感
+            if os.path.isdir(p) and key not in seen:
+                seen.add(key)
+                cands.append(p)
+
+        add(self.project_root)
+        for h in self._root_history:
+            add(h)
+        # 常见项目源：当前 root 的父目录 + 历史目录的父目录
+        parents: set[str] = set()
+        parents.add(os.path.dirname(self.project_root))
+        for h in self._root_history:
+            parents.add(os.path.dirname(h))
+        for parent in list(parents):
+            if not os.path.isdir(parent):
+                continue
+            try:
+                for name in sorted(os.listdir(parent)):
+                    if name.startswith("."):
+                        continue
+                    sub = os.path.join(parent, name)
+                    if os.path.isdir(sub) and any(
+                            os.path.isdir(os.path.join(sub, m))
+                            for m in (".git", ".codebuddy", ".agent_os")):
+                        add(sub)
+            except Exception:
+                continue
+        return cands[:50]
+
+    # endregion
 
     # region 持久化
 
@@ -94,10 +208,75 @@ class AgentOS:
                     continue
                 for a in dirty:
                     a._dirty = False
-                save_agents_to_disk(self)
+                with self._persist_lock:
+                    save_agents_to_disk(self)
                 logger.info(f"persist: saved {len(self.agents)} agents ({len(dirty)} dirty)")
             except Exception as e:
                 logger.warning(f"persist worker error: {e}")
+
+    def switch_root(self, new_root: str) -> dict:
+        """切换工作根目录 —— 实例与后台线程均保持不变，只改 project_root。
+
+        流程：落盘当前状态到旧目录 → 关闭旧 DB 连接 → 清空内存索引 →
+        改 project_root → 对新目录做迁移/junction 处理 → 重新加载该目录历史。
+        """
+        new_root = os.path.abspath(os.path.expanduser(new_root))
+        old_root = os.path.abspath(self.project_root)
+        if os.path.normcase(new_root) == os.path.normcase(old_root):
+            return {"ok": True, "project_root": old_root, "unchanged": True}
+        if not os.path.isdir(new_root):
+            return {"ok": False, "error": f"directory not found: {new_root}"}
+
+        from .agents.base import RunStatus as _RS
+        busy = [a.agent_id for a in self.agents.values()
+                if a.status in (_RS.RUNNING, _RS.WAITING, _RS.PLAN_PENDING)]
+        if busy:
+            return {"ok": False,
+                    "error": f"{len(busy)} agent(s) still running/waiting. Stop them before switching.",
+                    "busy_agents": busy}
+
+        # 1) 落盘当前状态到旧目录，关闭旧 DB 连接（防 persist worker 并发写旧连接）
+        with self._persist_lock:
+            try:
+                save_agents_to_disk(self)
+            except Exception as e:
+                logger.warning(f"switch_root save failed: {e}")
+            try:
+                if getattr(self, "_db_conn", None):
+                    self._db_conn.close()
+            except Exception:
+                pass
+            self._db_conn = None
+
+        # 2) 清空内存索引（旧目录 agents 已落盘，切换后由新目录历史接管）
+        self.agents.clear()
+        self._originally_waiting.clear()
+
+        # 3) 改路径 + 对新目录做首次进入处理
+        self.project_root = new_root
+        os.makedirs(self._state_dir, exist_ok=True)
+        self._migrate_legacy_state()
+        self._ensure_agent_os_link()
+
+        # 4) 加载新目录历史（新建连接，指向新路径）
+        with self._persist_lock:
+            load_agents_from_disk(self)
+
+        # 5) 同步进程 cwd，后续 agent 子进程默认工作目录一致
+        try:
+            os.chdir(new_root)
+        except Exception:
+            pass
+        # 6) 记录切换历史（最新在前）
+        self._root_history.insert(0, new_root)
+        seen = []
+        for p in self._root_history:
+            if p not in seen:
+                seen.append(p)
+        self._root_history = seen[:10]
+        self._save_root_history()
+        logger.info(f"switch_root: {old_root} -> {new_root} ({len(self.agents)} agents)")
+        return {"ok": True, "project_root": new_root}
 
     # ---- 超时看护 ----
 

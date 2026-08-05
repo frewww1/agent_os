@@ -13,7 +13,13 @@ from .deps import get_agent_os, get_project_root, safe_run as _safe_run
 
 router = APIRouter(prefix="/api", tags=["workspace"])
 
-WORKSPACES_DIR = Path(__file__).parent.parent.parent / "workspaces"
+
+def _workspaces_dir() -> Path:
+    """workspace 根目录：跟随 project_root（CLI 运行目录），而非安装目录。"""
+    root = get_project_root()
+    if root:
+        return root / "workspaces"
+    return Path(__file__).parent.parent.parent / "workspaces"
 
 
 def _get_git_dir() -> Path | None:
@@ -29,14 +35,15 @@ def _get_workspace_dir(agent_id: str) -> Path:
         agent = agent_os.get_agent(agent_id)
         if agent and agent.workspace_path:
             return Path(agent.workspace_path)
-    return WORKSPACES_DIR / agent_id
+    return _workspaces_dir() / agent_id
 
 
 @router.get("/workspaces")
 async def list_workspaces():
     result = []
-    if WORKSPACES_DIR.is_dir():
-        for ws_dir in sorted(WORKSPACES_DIR.iterdir(), reverse=True):
+    ws_base = _workspaces_dir()
+    if ws_base.is_dir():
+        for ws_dir in sorted(ws_base.iterdir(), reverse=True):
             if not ws_dir.is_dir():
                 continue
             ws_name = ws_dir.name
@@ -132,7 +139,7 @@ async def delete_workspace(req: dict):
         try:
             wp_path = Path(wp)
             wp_resolved = wp_path.resolve()
-            if WORKSPACES_DIR.resolve() in wp_resolved.parents and wp_path.exists():
+            if _workspaces_dir().resolve() in wp_resolved.parents and wp_path.exists():
                 if _pf.system() == "Windows":
                     _safe_run(["cmd", "/c", "rd", "/s", "/q", str(wp_path)],
                             capture_output=True, timeout=30)

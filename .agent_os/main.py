@@ -79,11 +79,12 @@ def main():
     args = parser.parse_args()
 
     # Initialize process manager
-    # 默认 project_root 为 .agent_os 的父目录（即项目根目录 /game）
+    # 默认 project_root 为 CLI 运行目录（cwd），实现"部署在一处、按运行目录工作"；
+    # 显式 --root 可覆盖。
     if args.root:
         project_root = os.path.abspath(args.root)
     else:
-        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        project_root = os.getcwd()
     backend_type = args.backend or default_backend
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)

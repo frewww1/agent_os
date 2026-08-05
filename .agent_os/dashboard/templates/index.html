@@ -47,8 +47,29 @@
             <span class="system-online"><i></i> SYSTEM ONLINE</span>
             <span class="stats" id="sidebarStats">0 agents</span>
             <span class="kbd-hint"><kbd>?</kbd></span>
+            <span class="footer-root" id="footerRoot" title="当前工作根目录 (project_root)：所有 workspace 与 agent 历史都落在该目录下。点击右侧 ⇄ 可切换。">loading…</span>
+            <button class="footer-root-switch" id="footerRootSwitch" title="切换到其他工作根目录" onclick="openRootSwitcher()">⇄</button>
         </div>
     </aside>
+
+    <!-- 切换工作根目录面板 -->
+    <div class="root-switcher" id="rootSwitcher" style="display:none" onclick="if(event.target===this)closeRootSwitcher()">
+        <div class="root-switcher-card">
+            <div class="root-switcher-header">
+                <span>切换工作根目录</span>
+                <button onclick="closeRootSwitcher()" title="关闭">×</button>
+            </div>
+            <input type="text" id="rootInput" placeholder="输入路径，或从下方候选选择…"
+                   autocomplete="off" spellcheck="false"
+                   oninput="filterRootCandidates()" onkeydown="rootInputKeydown(event)" />
+            <div class="root-switcher-hint">切换只改工作根目录，不重建服务；有运行中的 agent 时会被拒绝。</div>
+            <div class="root-switcher-list" id="rootCandidateList"></div>
+            <div class="root-switcher-actions">
+                <button class="root-switcher-cancel" onclick="closeRootSwitcher()">取消</button>
+                <button class="root-switcher-go" onclick="doSwitchRoot()">切换到该目录</button>
+            </div>
+        </div>
+    </div>
 
     <section class="mission-stage" id="missionStage">
         <header class="stage-header">
@@ -2889,6 +2910,91 @@ function renameAgent(agentId) {
     });
 }
 refreshTree();
+
+// === 加载服务运行信息（当前工作根目录 project_root）===
+async function loadServerInfo() {
+    try {
+        const resp = await fetch('/api/info');
+        const data = await resp.json();
+        if (!data || !data.ok) return;
+        const el = document.getElementById('footerRoot');
+        if (el) el.textContent = data.project_root;
+    } catch (e) { /* ignore */ }
+}
+loadServerInfo();
+
+// === 切换工作根目录（project_root）面板 ===
+let rootCandidates = [];
+
+function openRootSwitcher() {
+    document.getElementById('rootSwitcher').style.display = 'flex';
+    document.getElementById('rootInput').value = '';
+    loadRootCandidates();
+    document.getElementById('rootInput').focus();
+}
+
+function closeRootSwitcher() {
+    document.getElementById('rootSwitcher').style.display = 'none';
+}
+
+async function loadRootCandidates() {
+    try {
+        const resp = await fetch('/api/root/candidates');
+        const data = await resp.json();
+        rootCandidates = (data && data.candidates) || [];
+    } catch (e) {
+        rootCandidates = [];
+    }
+    filterRootCandidates();
+}
+
+function filterRootCandidates() {
+    const q = document.getElementById('rootInput').value.trim().toLowerCase();
+    const list = document.getElementById('rootCandidateList');
+    const cur = (document.getElementById('footerRoot').textContent || '').trim();
+    const shown = q ? rootCandidates.filter(p => p.toLowerCase().includes(q)) : rootCandidates;
+    if (!shown.length) {
+        list.innerHTML = '<div class="root-switcher-empty">无匹配目录' + (q ? '（' + escapeHtml(q) + '）' : '') + '</div>';
+        return;
+    }
+    list.innerHTML = shown.map(p =>
+        '<div class="root-switcher-item" onclick="pickRoot(\'' + p.replace(/\\/g, '\\\\').replace(/'/g, "\\'") + '\')" title="' + escapeHtml(p) + '">' +
+            '<span class="rs-path">' + escapeHtml(p) + '</span>' +
+            (p === cur ? '<span class="rs-badge">当前</span>' : '') +
+        '</div>'
+    ).join('');
+}
+
+function pickRoot(p) {
+    document.getElementById('rootInput').value = p;
+    filterRootCandidates();
+}
+
+function rootInputKeydown(e) {
+    if (e.key === 'Enter') doSwitchRoot();
+    if (e.key === 'Escape') closeRootSwitcher();
+}
+
+async function doSwitchRoot() {
+    const path = document.getElementById('rootInput').value.trim();
+    if (!path) return;
+    try {
+        const resp = await fetch('/api/root/switch', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({path})
+        });
+        const data = await resp.json();
+        if (resp.status === 409) { alert(data.error || '有 agent 正在运行，无法切换'); return; }
+        if (!resp.ok) { alert(data.error || '切换失败'); return; }
+        if (data.unchanged) { closeRootSwitcher(); showToast('已在目标目录', 'info'); return; }
+        closeRootSwitcher();
+        showToast('已切换到 ' + data.project_root, 'success');
+        setTimeout(() => location.reload(), 600);
+    } catch (e) {
+        alert('切换失败: ' + e);
+    }
+}
 
 // === 动态填充模型下拉（从 /api/models 获取 CLI 实际支持的模型）===
 function _modelGroupOf(id) {

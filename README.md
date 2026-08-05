@@ -32,6 +32,38 @@
 # 浏览器打开 http://127.0.0.1:8420
 ```
 
+### 全局部署（按 CLI 运行目录工作）
+
+agent_os 只需**部署在一个固定位置**，然后在任意项目目录下直接启动，它会以
+**当前 CLI 运行目录**为工作根（project_root）——Agent 的 workspace、产物、状态
+都落在当前目录，不用每个项目复制一份 `.agent_os`。
+
+```bat
+:: 1. 部署：把整个仓库放到固定位置，如 C:\tools\agent_os
+:: 2. 把 C:\tools\agent_os\.agent_os 加入 PATH（该目录含 agent_os.cmd）
+:: 3. 在任意项目目录下执行：
+agent_os
+:: 浏览器打开 http://127.0.0.1:8420，Agent 以当前目录为工作根
+```
+
+行为细节：
+
+- 服务默认以 `os.getcwd()` 为 `project_root`，也可 `agent_os --root <路径>` 显式指定
+- `state/`（agent 历史）与 `workspaces/`（任务产物）都创建在运行目录下，项目间互不干扰
+- 启动时自动在运行目录下创建 `.agent_os` junction 指向安装目录，因此 Agent
+  system prompt 中的 `python .agent_os/report.py` 等相对路径调用仍可直接工作
+- 首次在新目录运行时，若旧版 state（安装目录 `state/`）存在会自动迁移过去，不丢历史
+
+**Dashboard 内切换目录**：侧边栏底部显示当前工作根目录，点击右侧 `⇄` 打开切换面板
+（`POST /api/root/switch`）。切换**不重建服务实例**——只是改 `project_root` 并重载
+该目录的 agent 历史，后台线程/DB 连接均复用。前提是无运行中的 agent，否则会拒绝并提示。
+切走再切回，原目录的历史与 workspace 原样保留。
+
+切换面板提供智能候选（`GET /api/root/candidates`）：
+- **最近访问**：切换历史自动记忆（存于安装目录 `state/root_history.json`），一键切回
+- **常见项目**：自动扫描当前/历史目录的父目录，列出含 `.git`/`.codebuddy` 的项目目录
+- 输入框实时过滤候选，Enter 确认、Esc 关闭
+
 ### 切换底层 Agent
 
 编辑 `.agent_os/cli_config.json`：
