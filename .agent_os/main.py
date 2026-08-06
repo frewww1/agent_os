@@ -12,6 +12,7 @@ import argparse
 import asyncio
 import importlib.util
 import os
+import socket
 import sys
 import webbrowser
 from pathlib import Path
@@ -47,6 +48,27 @@ if _src_pkg_name not in sys.modules:
 
 from agent_os.src.core.agent_os import AgentOS
 from agent_os.dashboard.app import app, set_agent_os
+
+
+def _bind_socket(host: str, base_port: int) -> tuple[socket.socket | None, int]:
+    """从 base 起找空闲端口并原子占用（保持绑定，直接交给 uvicorn 复用）。
+
+    支持多开：端口被占用时自动递增；socket 保持打开可避免"探测后被抢"的竞态
+    （uvicorn 绑定失败会自行退出且不抛异常，无法用重试兜底，故必须预占用）。
+    """
+    for p in range(base_port, base_port + 20):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            # 注意：不能设置 SO_REUSEADDR —— Windows 上它会允许两个 socket
+            # 绑定同一端口，导致多开时端口不递增、实例互相抢请求。
+            s.bind((host, p))
+            s.listen(1)
+            # 用实际绑定端口（--port 0 时由系统随机分配）
+            return s, s.getsockname()[1]
+        except OSError:
+            s.close()
+            continue
+    return None, base_port
 
 
 def _load_cli_config():
@@ -86,14 +108,20 @@ def main():
     else:
         project_root = os.getcwd()
     backend_type = args.backend or default_backend
+    # 预绑定端口并原子占用（多开：被占用自动递增）。socket 保持打开，
+    # 交给 uvicorn 复用，避免"探测后被抢"竞态导致启动失败。
+    sock, port = _bind_socket(args.host, args.port)
+    if sock is None:
+        print(f"[ERROR] No free port found from {args.port} to {args.port + 20}")
+        sys.exit(1)
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    agent_os = AgentOS(project_root=project_root, cli_command=args.cli, port=args.port,
+    agent_os = AgentOS(project_root=project_root, cli_command=args.cli, port=port,
                         default_model=args.model, loop=loop,
                         backend_type=backend_type)
     set_agent_os(agent_os)
 
-    url = f"http://{args.host}:{args.port}"
+    url = f"http://{args.host}:{port}"
     print()
     print("=" * 48)
     print("  Agent OS — Multi-Agent Orchestration")
@@ -111,8 +139,12 @@ def main():
     if not args.no_browser:
         webbrowser.open(url)
 
-    # Start server
-    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    # Start server：把已绑定的 socket 直接交给 uvicorn（不重新 bind）。
+    # 注：不能传 uvicorn 的 fd 参数（Windows 上其内部硬编码 AF_UNIX），
+    # 用 Server.run(sockets=[sock]) 复用 TCP socket 最稳。
+    config = uvicorn.Config(app, host=args.host, port=port, log_level="warning")
+    server = uvicorn.Server(config)
+    server.run(sockets=[sock])
 
 
 if __name__ == "__main__":

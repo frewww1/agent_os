@@ -64,6 +64,21 @@ agent_os
 - **常见项目**：自动扫描当前/历史目录的父目录，列出含 `.git`/`.codebuddy` 的项目目录
 - 输入框实时过滤候选，Enter 确认、Esc 关闭
 
+### 多开（多个项目同时跑）
+
+每个实例独立占用一个端口，互不影响，可同时服务多个项目：
+
+```bat
+cd C:\projectA && agent_os          rem 自动绑定空闲端口（8420，被占用则 +1）
+cd C:\projectB && agent_os          rem 自动到 8421
+```
+
+- **端口自动分配**：启动时预绑定空闲端口（从 8420 起递增），并把已绑定的
+  socket 直接交给 uvicorn，杜绝"探测后被抢"的竞态；启动横幅显示实际 URL
+- **完全隔离**：state/DB/workspaces 按 `project_root` 隔离；agent 子进程通过
+  env `AGENT_OS_PORT` 连接各自实例；CLI 会话按项目 cwd 隔离
+- 资源注意：每个实例有独立的持久化线程和 agent 进程，agent 数会叠加
+
 ### 切换底层 Agent
 
 编辑 `.agent_os/cli_config.json`：
