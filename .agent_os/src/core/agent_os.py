@@ -346,8 +346,10 @@ class AgentOS:
         if env_extras:
             env.update(env_extras)
         if not parent_id and not system_prompt:
+            # workspace 一定由 build_agent_env 设置（绝对路径），fallback 交给
+            # _make_system_prompt 用 $AGENT_OS_WORKSPACE 兜底
             system_prompt = RootAgent._make_system_prompt(
-                env.get("AGENT_OS_WORKSPACE", ".agent_os/workspaces/<agent>/"))
+                env.get("AGENT_OS_WORKSPACE", ""))
 
         parent = self._get_parent(parent_id)
         depth = (parent.depth or 0) + 1 if parent else 0

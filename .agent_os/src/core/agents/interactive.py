@@ -12,7 +12,7 @@ class InteractiveAgent(Agent):
     """交互式 — 用户 Done 完成。"""
 
     def build_system_prompt(self) -> str | None:
-        return _subagent_prompt("interactive", self.prompt, self.workspace_path)
+        return self.system_prompt or _subagent_prompt("interactive", self.prompt, self.workspace_path)
 
     def idle_timeout_enabled(self) -> bool:
         return False

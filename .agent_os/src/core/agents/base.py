@@ -32,6 +32,8 @@ from pydantic import BaseModel, Field, ConfigDict, PrivateAttr
 
 from enum import Enum
 
+from . import prompts
+
 
 class RunStatus(str, Enum):
     RUNNING = "running"
@@ -289,6 +291,10 @@ class Agent(BaseModel):
                     agent_cls=None) -> "Agent":
         """创建子 agent 并建立父子链接。"""
         import uuid as _uuid
+        # 兜底：所有子 agent（含 supervisor/goal）都要知道共享 workspace。
+        # 标准模板（prompts.compose）已含 "## Workspace"，此处只补自定义 system_prompt。
+        if system_prompt and "## Workspace" not in system_prompt and self.workspace_path:
+            system_prompt += "\n\n" + prompts.workspace_block(self.workspace_path)
         child = (agent_cls or Agent)(backend=self._backend, project_root=self._project_root,
                                      agent_id=_uuid.uuid4().hex[:10], prompt=prompt,
                                      session_id=str(_uuid.uuid4()),
@@ -585,7 +591,7 @@ class Agent(BaseModel):
             f'Goal: {self.goal}\n\n{context[:12000]}\n\n'
             f'Did the agent achieve the goal? (YES/NO)'
         )
-        sys_prompt = "You are a concise evaluator. Reply with YES or NO only."
+        sys_prompt = prompts.compose("goal", self.workspace_path)
         child = self._make_child(prompt, sys_prompt, "goal", agent_cls=GoalAgent)
         child.initialize(prompt, self.model)
         logger.info(f"[{self.agent_id[:8]}] Goal agent spawned: {child.agent_id[:8]}")
@@ -615,10 +621,9 @@ class Agent(BaseModel):
             f"## 审查任务\n{task_desc}\n\n## Agent 产出\n{context[:8000]}\n\n"
             f"全部满足 → report.py PASS\n有问题 → send.py CORRECTION"
         )
-        sup_sys = (
-            f"你是严格审查 AI agent 工作的监督者。\n"
-            f"验证产出是否满足：\n{self.supervisor}\n\n"
-            f"PASS → report.py\nCORRECTION → send.py\nDo NOT report after correction."
+        sup_sys = prompts.compose(
+            "supervisor", self.workspace_path,
+            extra=f"验证产出是否满足：\n{self.supervisor}",
         )
         child = self._make_child(sup_prompt, sup_sys, "supervisor", agent_cls=SupervisorAgent)
         child.initialize(sup_prompt, self.model)
@@ -668,7 +673,7 @@ class Agent(BaseModel):
                 prompt=prompt, model=model or self.model,
                 session_id=None if resume else self.session_id,
                 resume_session=self.session_id if resume else None,
-                system_prompt=self.system_prompt,
+                system_prompt=self.build_system_prompt(),
                 cwd=cwd, env=env,
             )
         except Exception as e:

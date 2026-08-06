@@ -3,6 +3,7 @@ import logging
 from datetime import datetime
 
 from .base import Agent, RunStatus
+from . import prompts
 
 logger = logging.getLogger("agent_os")
 
@@ -11,21 +12,13 @@ class RootAgent(Agent):
     """根 agent — auto-complete，无 idle 超时。"""
 
     @staticmethod
-    def _make_system_prompt(workspace_path: str = "") -> str:
-        ws = workspace_path or ".agent_os/workspaces/<agent>/"
-        return (
-            "You are running under Agent OS, a multi-agent orchestration system.\n\n"
-            "## Workspace\n\n"
-            f"Your workspace is at {ws}\n"
-            "The env var $AGENT_OS_WORKSPACE points to this directory.\n\n"
-            "## Available Tools\n\n"
-            "- Create sub-agents: use the Task tool to spawn child agents\n"
-            "- report.py: `python .agent_os/report.py --result \"<summary>\"`\n"
-            "- send.py: `python .agent_os/send.py --msg \"<message>\"`\n"
-        )
+    def _make_system_prompt(workspace_path: str = "", dag_steps: list | None = None) -> str:
+        """根 agent 提示词：通用块组合（workspace + spawn + report/send，可选 DAG）。"""
+        return prompts.compose("root", workspace_path, dag_steps=dag_steps)
 
     def build_system_prompt(self) -> str | None:
-        return self._make_system_prompt(self.workspace_path)
+        # 已设置（含用户自定义）优先；为空时用当前 workspace 动态生成
+        return self.system_prompt or self._make_system_prompt(self.workspace_path)
 
     def idle_timeout_enabled(self) -> bool:
         return False
