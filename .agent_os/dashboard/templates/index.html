@@ -149,23 +149,10 @@
             <section class="workspace-panel" id="workspacePanel" style="display:none">
                 <div class="workspace-header">
                     <div><span class="workspace-kicker">MISSION ARTIFACTS</span><span class="workspace-title">Workspace</span></div>
-                    <span class="workspace-branch" id="workspaceBranch"></span>
                     <span class="workspace-count" id="workspaceCount"></span>
                     <button class="workspace-toggle" id="workspaceToggle" onclick="toggleWorkspace()">−</button>
                 </div>
                 <div class="workspace-body" id="workspaceBody">
-                    <div class="branch-section" id="branchSection" style="display:none">
-                        <div class="branch-section-header">
-                            <span class="branch-section-title">BRANCHES</span>
-                            <button class="btn-sm" onclick="showCreateBranch()">＋ NEW</button>
-                        </div>
-                        <div class="branch-list" id="branchList"></div>
-                        <div class="branch-create" id="branchCreate" style="display:none">
-                            <input type="text" id="newBranchName" placeholder="branch-name" />
-                            <button class="btn-sm" onclick="createBranch()">CREATE</button>
-                            <button class="btn-sm" onclick="hideCreateBranch()">CANCEL</button>
-                        </div>
-                    </div>
                     <div class="workspace-files" id="workspaceFiles"><div class="workspace-empty">No artifacts yet</div></div>
                     <div class="workspace-preview-empty" id="workspacePreviewEmpty">
                         <div class="artifact-empty-mark"><i></i></div>
@@ -322,6 +309,8 @@
 <script>
 let currentAgentId = null;
 let eventSource = null;
+let _sseRetryTimer = null;
+let _sseRetryCount = 0;
 let renderedSeq = 0;
 let autoScroll = true;
 let unreadEvents = 0;
@@ -330,7 +319,11 @@ let agentGraphSignature = '';
 let stageView = 'topology';
 let templateGraphInstance = null;
 let qualityPanelVisible = false;
-let missionFilter = 'recent';
+// 用户对树过滤的选择持久化到 localStorage：历史会话多时切到 ALL 后，
+// 刷新/重进页面仍保持"全部显示"，不会被重置回 RECENT（只显示最近 24 个）
+let missionFilter = (() => {
+    try { return localStorage.getItem('missionFilter') || 'recent'; } catch (e) { return 'recent'; }
+})();
 let missionSearch = '';
 const STATUS_LABEL = {
     running: 'Running…',
@@ -750,11 +743,21 @@ async function runDagTemplate() {
 }
 
 let sending = false;
+// 乐观渲染的用户消息（等待 SSE 消费，避免重复显示）
+let _pendingOptimistic = [];
 
 async function send() {
     if (sending) return;
     const prompt = document.getElementById('promptInput').value.trim();
     if (!prompt) return;
+
+    // 乐观渲染：用户消息立即显示，不等 SSE（避免"回复不实时刷出来"）
+    if (currentAgentId) {
+        _pendingOptimistic.push(prompt);
+        appendEvent({kind: 'prompt', text: prompt, ts: new Date().toISOString(), source: 'user'});
+        autoScroll = true;
+        scrollToBottom();
+    }
 
     sending = true;
     const btn = document.getElementById('sendBtn');
@@ -928,6 +931,8 @@ async function continueChat(prompt) {
 
 function connectStream(agentId) {
     if (eventSource) { eventSource.close(); }
+    if (_sseRetryTimer) { clearTimeout(_sseRetryTimer); _sseRetryTimer = null; }
+    _sseRetryCount = 0;
     eventSource = new EventSource(`/api/agent/${agentId}/stream`);
     eventSource.onmessage = (e) => {
         if (currentAgentId !== agentId) return;  // 已切换到其他 agent，丢弃
@@ -936,9 +941,15 @@ function connectStream(agentId) {
         catch { ev = { kind: 'raw', text: e.data }; }
         if (ev.seq && ev.seq <= renderedSeq) return;  // 防重
         if (ev.seq) renderedSeq = ev.seq;
+        // 用户消息已在 send() 乐观渲染，SSE 到达时消费掉避免重复显示
+        if (ev.kind === 'prompt') {
+            const i = _pendingOptimistic.findIndex(t => (t || '').trim() === ((ev.text || '').trim()));
+            if (i >= 0) { _pendingOptimistic.splice(i, 1); return; }
+        }
         appendEvent(ev);
     };
     eventSource.addEventListener('done', (e) => {
+        _flushTypewriter();  // 会话结束：未完成的打字机内容渲染成 markdown
         eventSource.close(); eventSource = null;
         const status = e.data;
         setStatus(status, STATUS_LABEL[status] || status);
@@ -948,9 +959,19 @@ function connectStream(agentId) {
         if (currentAgentId) { refreshWorkspace(currentAgentId); refreshDag(currentAgentId); }
     });
     eventSource.onerror = () => {
+        _flushTypewriter();  // 连接丢失也 flush，避免打字机内容停在纯文本
         if (eventSource) { eventSource.close(); eventSource = null; }
-        setStatus('failed', 'Connection lost');
-        document.getElementById('stopBtn').style.display = 'none';
+        // 自动重连：SSE 断开后按退避间隔重连，重连后补齐断线期间积压的事件
+        // （renderedSeq 防重会跳过已显示的），避免"没回复、刷新才看到"
+        if (currentAgentId !== agentId) return;
+        if (_sseRetryTimer) clearTimeout(_sseRetryTimer);
+        _sseRetryCount = Math.min(_sseRetryCount + 1, 5);
+        const delay = Math.min(3000 * Math.pow(2, _sseRetryCount - 1), 30000);
+        setStatus('failed', `Reconnecting… (${_sseRetryCount})`);
+        _sseRetryTimer = setTimeout(() => {
+            _sseRetryTimer = null;
+            if (currentAgentId === agentId) connectStream(agentId);
+        }, delay);
     };
 }
 
@@ -962,6 +983,8 @@ async function stopCurrent() {
 async function viewAgent(agentId) {
     console.log('[viewAgent] called with', agentId, 'prev currentAgentId=', currentAgentId);
     currentAgentId = agentId;
+    // 记住当前查看的 agent，页面刷新后自动恢复（避免刷新后历史会话丢失）
+    try { sessionStorage.setItem('lastAgentId', agentId); } catch (e) {}
     if (eventSource) { eventSource.close(); eventSource = null; }
     // 先重置 renderedSeq，防止切换前的旧 stream 回调污染新 run 的序号
     renderedSeq = 0;
@@ -982,9 +1005,32 @@ async function viewAgent(agentId) {
     updateConvSubtitle(data);
 
     const events = data.events || [];
-    for (const ev of events) {
+    // 历史回放：不重放打字机动画，但 delta 内容不能丢。
+    // text_delta 累积到缓冲：若后续有完整 text 事件则丢弃缓冲（用完整版渲染）；
+    // 若块结束仍无 text（CLI 对部分文本只发 delta），则 flush 为一次性文本渲染。
+    // 超长会话动态加载：只渲染最近 HIST_PAGE_SIZE 条，更早的由"加载更早记录"分页获取
+    const startIdx = Math.max(0, events.length - HIST_PAGE_SIZE);
+    const visibleEvents = events.slice(startIdx);
+    _histOldestTs = visibleEvents.length ? (visibleEvents[0].ts || '') : '';
+    _histLoading = false;  // 切换 agent 时重置加载锁
+    let histDeltaBuf = '';
+    for (const ev of visibleEvents) {
         if (ev.seq) renderedSeq = ev.seq;
+        if (ev.kind === 'text_delta') { histDeltaBuf += ev.text || ''; continue; }
+        if (ev.kind === 'text') { histDeltaBuf = ''; }
+        if (ev.kind === 'thinking_delta') continue;
+        if (histDeltaBuf) {
+            appendEvent({kind: 'text', text: histDeltaBuf, ts: ev.ts});
+            histDeltaBuf = '';
+        }
         appendEvent(ev);
+    }
+    if (histDeltaBuf) {
+        appendEvent({kind: 'text', text: histDeltaBuf});
+    }
+    // 存在更早历史（detail 只回最近 1000 条，或内存已裁剪到 1 万条）→ 顶部显示加载按钮
+    if (data.total_events > visibleEvents.length || data.events_capped) {
+        _showHistMoreBtn();
     }
     autoScroll = true;
     unreadEvents = 0;
@@ -1020,6 +1066,114 @@ function updateConvSubtitle(data) {
     if (data.task_type === 'interactive') bits.push('interactive');
     if (data.user_terminated) bits.push('ended by user');
     sub.textContent = bits.join(' · ');
+}
+
+// === 超长会话动态加载 ===
+
+const HIST_PAGE_SIZE = 500;  // 每次渲染/加载的事件条数
+let _histOldestTs = '';      // 当前已渲染的最早事件时间戳（分页游标）
+let _histLoading = false;    // 加载中锁（防止滚动监听 + 手动点击并发重复加载）
+
+// 真正的滚动容器是 .output-area（.conv-stream 本身不滚动，scrollTop 恒 0）
+function _getScrollContainer() {
+    return document.querySelector('.output-area') || document.getElementById('convStream');
+}
+
+function _showHistMoreBtn() {
+    const stream = document.getElementById('convStream');
+    if (!stream || document.getElementById('histMoreBtn')) return;
+    const btn = el('div', 'hist-more-btn');
+    btn.id = 'histMoreBtn';
+    btn.textContent = '＋ 加载更早记录';
+    btn.title = '向上翻页加载更早的会话内容';
+    btn.onclick = loadEarlierEvents;
+    stream.insertBefore(btn, stream.firstChild);
+    _setupHistAutoLoad();
+}
+
+function _hideHistMoreBtn() {
+    const btn = document.getElementById('histMoreBtn');
+    if (btn) btn.remove();
+}
+
+async function loadEarlierEvents() {
+    if (!currentAgentId || _histLoading) return;
+    const btn = document.getElementById('histMoreBtn');
+    if (!btn) return;  // 没有按钮 = 没有更早历史
+    _histLoading = true;
+    const prevText = btn.textContent;
+    btn.textContent = '加载中…';
+    btn.style.pointerEvents = 'none';
+    try {
+        const resp = await fetch(`/api/agent/${currentAgentId}/events?before=${encodeURIComponent(_histOldestTs || '')}&limit=${HIST_PAGE_SIZE}`);
+        const data = await resp.json();
+        if (!resp.ok || data.error) throw new Error(data.error || 'load failed');
+        const evs = data.events || [];
+        if (!evs.length) { _hideHistMoreBtn(); return; }
+        _prependHistoryEvents(evs);
+        _histOldestTs = data.oldest_ts || _histOldestTs;
+        if (data.has_more) {
+            btn.textContent = '＋ 加载更早记录';
+            btn.style.pointerEvents = '';
+        } else {
+            _hideHistMoreBtn();
+        }
+    } catch (e) {
+        const b = document.getElementById('histMoreBtn');
+        if (b) { b.textContent = prevText; b.style.pointerEvents = ''; }
+        showToast('加载失败: ' + e, 'error');
+    } finally {
+        _histLoading = false;
+    }
+}
+
+// 把更早的事件插入 convStream 顶部（"加载更早记录"按钮之后），保持滚动位置
+function _prependHistoryEvents(events) {
+    const stream = document.getElementById('convStream');
+    if (!stream) return;
+    const sc = _getScrollContainer();
+    const prevScrollHeight = sc ? sc.scrollHeight : stream.scrollHeight;
+    const prevScrollTop = sc ? sc.scrollTop : stream.scrollTop;
+    const anchor = document.getElementById('histMoreBtn');
+    // 与 viewAgent 相同的 delta 合并，但渲染为静态文本（无打字动画），且不更新 renderedSeq
+    const frag = document.createDocumentFragment();
+    const nodes = [];
+    let buf = '';
+    const flush = (ts) => {
+        if (!buf) return;
+        const n = renderEvent({kind: 'text', text: buf, ts: ts});
+        if (n) nodes.push(n);
+        buf = '';
+    };
+    for (const ev of events) {
+        if (ev.kind === 'text_delta') { buf += ev.text || ''; continue; }
+        if (ev.kind === 'text') buf = '';
+        if (ev.kind === 'thinking_delta') continue;
+        flush(ev.ts);
+        const n = renderEvent(ev);
+        if (n) nodes.push(n);
+    }
+    flush('');
+    nodes.forEach(n => frag.appendChild(n));
+    stream.insertBefore(frag, anchor ? anchor.nextSibling : stream.firstChild);
+    // 内容在顶部增长，向下平移新增的高度，保持当前视口不跳（作用于真正的滚动容器）
+    if (sc) {
+        const grown = sc.scrollHeight - prevScrollHeight;
+        sc.scrollTop = prevScrollTop + grown;
+    }
+}
+
+// 滚动到会话顶部时自动加载更早记录（无需手动点按钮）
+let _histAutoLoadBound = false;
+function _setupHistAutoLoad() {
+    const sc = _getScrollContainer();
+    if (!sc || _histAutoLoadBound) return;
+    _histAutoLoadBound = true;
+    sc.addEventListener('scroll', () => {
+        if (!document.getElementById('histMoreBtn')) return;
+        if (_histLoading) return;
+        if (sc.scrollTop <= 80) loadEarlierEvents();
+    });
 }
 
 // === Event rendering ===
@@ -1226,6 +1380,22 @@ function _clearThinking() {
         _thinkingCard.open = false;  // 收起而非删除，避免 DOM 异常
         _thinkingCard.style.opacity = '0.6';
     }
+}
+
+// 会话结束时 flush 打字机：若最后一段文本只有 text_delta（无 text 完整事件），
+// 把累积内容渲染成 markdown，避免"会话结束但 md 未渲染、需刷新才显示"
+function _flushTypewriter() {
+    if (!_typewriterBuf || !_typewriterCard) return;
+    const text = _typewriterBuf;
+    _clearTypewriter();
+    _typewriterBuf = '';
+    const card = _typewriterCard;
+    _typewriterCard = null;
+    card.innerHTML = '';
+    card.appendChild(el('div', 'msg-role', 'agent'));
+    const body = el('div', 'msg-body markdown-body');
+    setMarkdownBody(body, text);
+    card.appendChild(body);
 }
 
 function renderText(ev) {
@@ -1509,7 +1679,13 @@ function renderUserDone(ev) {
 
 function renderError(ev) {
     const card = el('div', 'msg msg-error');
-    card.appendChild(el('div', 'msg-role', 'error'));
+    const head = el('div', 'msg-head');
+    head.appendChild(el('span', 'msg-role', 'error'));
+    if (ev.ts) {
+        const t = el('span', 'msg-time', (ev.ts || '').slice(11, 19));
+        head.appendChild(t);
+    }
+    card.appendChild(head);
     const body = el('div', 'msg-body');
     body.textContent = ev.text || '';
     card.appendChild(body);
@@ -1832,6 +2008,7 @@ function clearSidebarSearch() {
 
 function setMissionFilter(mode) {
     missionFilter = mode;
+    try { localStorage.setItem('missionFilter', mode); } catch (e) {}
     document.getElementById('recentMissionFilter').classList.toggle('active', mode === 'recent');
     document.getElementById('allMissionFilter').classList.toggle('active', mode === 'all');
     renderSidebarTree();
@@ -2008,7 +2185,9 @@ function renderTree(nodes, depth) {
             ? '<span class="tree-badge tree-badge-interactive">interactive</span>'
             : (node.is_root ? '' : `<span class="tree-badge tree-badge-${escapeHtml(node.task_type || 'gen')}">${escapeHtml(node.task_type || 'gen')}</span>`);
 
-        const canDone = node.status === 'running' && !node.is_root;
+        // interactive agent 被 Stop 后仍可 Done（从 stopped → completed，通知父 agent）
+        const canDone = !node.is_root && (node.status === 'running'
+            || (node.status === 'stopped' && node.task_type === 'interactive'));
         const doneLabel = node.task_type === 'interactive' ? 'Done' : 'Force end';
         const canStop = node.status === 'running' && node.is_root;
 
@@ -2142,90 +2321,18 @@ async function refreshWorkspace(agentId) {
     }
     const resp = await fetch(`/api/agent/${agentId}/workspace`);
     const data = await resp.json();
-    const files = data.files || [];
-    const branches = data.branches || [];
-    const currentBranch = data.current_branch || '';
-    const taskName = data.task_name || '';
-
-    // 仅当当前分支不属于该任务的任何分支时，才自动切换到基准分支
-    // （避免覆盖用户手动切换到衍生分支的操作）
-    const branchNames = branches.map(b => b.name);
-    const isOnTaskBranch = branchNames.includes(currentBranch);
-    if (!isOnTaskBranch && branchNames.length > 0) {
-        const baseBranch = branches.find(b => b.is_base) || branches[0];
-        try {
-            const swResp = await fetch(`/api/run/${agentId}/workspace/branch`, {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({branch: baseBranch.name}),
-            });
-            const swResult = await swResp.json();
-            if (swResult.ok) {
-                const resp2 = await fetch(`/api/agent/${agentId}/workspace`);
-                const data2 = await resp2.json();
-                renderWorkspaceData(agentId, data2);
-                refreshDag(agentId);
-                return;
-            }
-        } catch (e) {
-            // 切换失败，继续用当前数据渲染
-        }
-    }
     renderWorkspaceData(agentId, data);
 }
 
 function renderWorkspaceData(agentId, data) {
     const files = data.files || [];
-    const branches = data.branches || [];
-    const currentBranch = data.current_branch || '';
     const taskName = data.task_name || '';
+    // 保存 task_name 供 refreshDag 查询 workspace_id 使用
+    _currentTaskName = taskName || '';
 
     const panel = document.getElementById('workspacePanel');
     const countEl = document.getElementById('workspaceCount');
     countEl.textContent = files.length ? `${files.length} file${files.length > 1 ? 's' : ''}` : '';
-    
-    // 显示当前分支
-    const branchEl = document.getElementById('workspaceBranch');
-    if (currentBranch) {
-        // 查找当前分支的 display 名称
-        const curBranchObj = branches.find(b => (b.name || b) === currentBranch);
-        const display = (curBranchObj && curBranchObj.display) ? curBranchObj.display : currentBranch;
-        branchEl.innerHTML = `🌿 <span class="current-branch">${escapeHtml(display)}</span>`;
-    } else {
-        branchEl.textContent = '';
-    }
-    // 存储 task_name 到 dataset，供 refreshDag 使用
-    branchEl.dataset.taskName = taskName || '';
-    
-    // 渲染分支列表（树形结构）
-    const branchSection = document.getElementById('branchSection');
-    const branchList = document.getElementById('branchList');
-    if (branches.length > 0) {
-        branchSection.style.display = '';
-        // 分类：基准分支 vs 衍生分支
-        const baseBranch = branches.find(b => b.is_base);
-        const derivedBranches = branches
-            .filter(b => !b.is_base)
-            .sort((a, b) => {
-                const na = parseInt((a.name.match(/-r(\d+)$/) || [])[1] || '0');
-                const nb = parseInt((b.name.match(/-r(\d+)$/) || [])[1] || '0');
-                return na - nb;
-            });
-
-        let html = '';
-        // 基准分支
-        if (baseBranch) {
-            html += renderBranchItem(baseBranch, baseBranch.name === currentBranch, agentId, 0, true);
-        }
-        // 衍生分支
-        const lastIdx = derivedBranches.length - 1;
-        derivedBranches.forEach((b, idx) => {
-            html += renderBranchItem(b, b.name === currentBranch, agentId, 1, idx === lastIdx);
-        });
-        branchList.innerHTML = html;
-    } else {
-        branchSection.style.display = 'none';
-    }
     
     panel.style.display = stageView === 'files' ? '' : 'none';
 
@@ -2245,116 +2352,7 @@ function renderWorkspaceData(agentId, data) {
     }
 }
 
-async function switchBranch(agentId, branch) {
-    if (!confirm(`切换到分支 \"${branch}\"？工作区文件将被替换。`)) return;
-    try {
-        const resp = await fetch(`/api/run/${agentId}/workspace/branch`, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({branch: branch}),
-        });
-        const result = await resp.json();
-        if (result.ok) {
-            showToast(`已切换到: ${branch}`, 'success');
-            await refreshWorkspace(agentId);
-            await refreshDag(agentId);
-            const wsId = document.getElementById('workspaceBranch')?.dataset?.taskName || '';
-            refreshTree(wsId);
-        } else {
-            showToast(`切换失败: ${result.error}`, 'error');
-            refreshWorkspace(agentId);
-        }
-    } catch (e) {
-        showToast(`切换失败: ${e.message}`, 'error');
-        refreshWorkspace(agentId);
-    }
-}
 
-function renderBranchItem(branch, isCurrent, agentId, depth, isBase, isLast) {
-    const name = branch.name;
-    const display = branch.display || '';
-    const icon = isCurrent ? '●' : '○';
-    const cls = isCurrent ? 'branch-item current' : 'branch-item';
-    const label = display || name;
-
-    // 树形缩进前缀
-    let prefix = '';
-    if (depth > 0) {
-        prefix = isLast ? '└─ ' : '├─ ';
-    }
-
-    const sub = display ? `<span class="branch-id">${escapeHtml(name)}</span>` : '';
-    const tag = isCurrent ? '<span class="branch-tag">当前</span>' : '';
-    // 衍生分支显示删除按钮（hover 可见）
-    const delBtn = (!isBase && depth > 0)
-        ? `<button class="branch-del-btn" title="删除此分支" onclick="event.stopPropagation(); deleteBranch('${escapeHtml(name)}', '${escapeHtml(agentId)}')">×</button>`
-        : '';
-
-    return `<div class="${cls}" onclick="switchBranch('${escapeHtml(agentId)}', '${escapeHtml(name)}')" style="padding-left: ${8 + depth * 18}px">
-        <span class="branch-icon">${icon}</span>
-        <span class="branch-tree-prefix">${prefix}</span>
-        <span class="branch-label">${escapeHtml(label)}</span>
-        ${sub}
-        ${tag}
-        ${delBtn}
-    </div>`;
-}
-
-async function deleteBranch(branchName, agentId) {
-    if (!confirm(`确定删除分支 "${branchName}"？此操作不可恢复。`)) return;
-    try {
-        const resp = await fetch(`/api/branch/${encodeURIComponent(branchName)}`, {
-            method: 'DELETE',
-        });
-        const result = await resp.json();
-        if (result.ok) {
-            showToast(`已删除分支: ${branchName}`, 'success');
-            refreshWorkspace(agentId);
-        } else {
-            showToast(`删除失败: ${result.error}`, 'error');
-        }
-    } catch (e) {
-        showToast(`删除失败: ${e.message}`, 'error');
-    }
-}
-
-function showCreateBranch() {
-    document.getElementById('branchCreate').style.display = '';
-    document.getElementById('newBranchName').focus();
-}
-
-function hideCreateBranch() {
-    document.getElementById('branchCreate').style.display = 'none';
-    document.getElementById('newBranchName').value = '';
-}
-
-async function createBranch() {
-    const nameInput = document.getElementById('newBranchName');
-    const name = nameInput.value.trim();
-    if (!name) return;
-    // 创建分支：在当前 run 的 workspace 中执行 git branch + checkout
-    const agentId = currentAgentId;
-    if (!agentId) return;
-    try {
-        // 通过分支切换 API，先创建分支（在 git 中已存在则切换，否则需要服务端支持创建）
-        // 当前 API 只支持切换已存在的分支，需要服务端扩展
-        const resp = await fetch(`/api/agent/${agentId}/workspace/branch/create`, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({branch: name}),
-        });
-        const result = await resp.json();
-        if (result.ok) {
-            showToast(`已创建并切换到: ${name}`, 'success');
-            hideCreateBranch();
-            refreshWorkspace(agentId);
-        } else {
-            showToast(`创建失败: ${result.error}`, 'error');
-        }
-    } catch (e) {
-        showToast(`创建失败: ${e.message}`, 'error');
-    }
-}
 
 // ============================================================
 // Orchestration graph — Cytoscape + Dagre
@@ -2363,6 +2361,8 @@ let dagData = [];
 let graphMode = 'workflow';
 let graphInstance = null;
 let selectedGraphNodeId = null;
+// 当前查看 agent 的任务名（workspace 目录名），供 refreshDag 查询 workspace_id 使用
+let _currentTaskName = '';
 
 async function refreshDag(agentId) {
     const panel = document.getElementById('dagPanel');
@@ -2376,7 +2376,7 @@ async function refreshDag(agentId) {
     document.getElementById('orchestrationEmpty').style.display = 'none';
     panel.style.display = stageView === 'topology' ? '' : 'none';
     let data = null;
-    const taskName = document.getElementById('workspaceBranch')?.dataset?.taskName || '';
+    const taskName = _currentTaskName || '';
     try {
         const url = taskName
             ? `/api/agent/${agentId}/dag?workspace_id=${encodeURIComponent(taskName)}`
@@ -2694,7 +2694,7 @@ function selectGraphNode(node) {
         : `<span class="inspector-muted">${emptyText}</span>`;
     const action = data.kind === 'agent'
         ? `<button class="inspector-action" onclick="viewAgent('${escapeHtml(data.id)}')">打开 Agent 会话</button>`
-        : (data.sha ? `<button class="inspector-action danger" onclick="dagNodeClick('${escapeHtml(data.id)}')">从此节点创建回退分支</button>` : '');
+        : '';
     inspector.innerHTML = `
         <div class="inspector-kicker">${data.kind === 'agent' ? 'AGENT' : 'WORKFLOW STEP'}</div>
         <div class="inspector-title">${escapeHtml(data.name || data.id)}</div>
@@ -2740,37 +2740,6 @@ function resetGraphZoom() {
     graphInstance.animate({zoom: 1, center: {eles: graphInstance.elements()}, duration: 220});
 }
 
-function dagNodeClick(stepId) {
-    if (!currentAgentId) return;
-    const node = dagData.find(s => s.id === stepId);
-    if (!node || !node.sha) {
-        showToast(`节点 ${stepId} 尚未生成可回退版本`);
-        return;
-    }
-    checkoutStep(currentAgentId, stepId);
-}
-
-// 获取该 step 及所有下游节点
-function getAffectedSteps(stepId) {
-    if (!dagData) return [];
-    const result = [];
-    const queue = [stepId];
-    const visited = new Set();
-    while (queue.length > 0) {
-        const id = queue.shift();
-        if (visited.has(id)) continue;
-        visited.add(id);
-        const node = dagData.find(s => s.id === id);
-        if (node) result.push(node);
-        dagData.forEach(s => {
-            if ((s.depends_on || []).includes(id) && !visited.has(s.id)) {
-                queue.push(s.id);
-            }
-        });
-    }
-    return result;
-}
-
 // 拓扑分层
 function topoLevels(steps) {
     const inDegree = {};
@@ -2806,27 +2775,6 @@ function toggleDag() {
         graphInstance.resize();
         fitGraph();
     });
-}
-
-async function checkoutStep(agentId, stepId) {
-    if (!confirm(`确定回退到 step "${stepId}"？\n将从该 commit 创建新分支，原分支保持不变。`)) return;
-    try {
-        const resp = await fetch(`/api/agent/${agentId}/dag/checkout`, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({step_id: stepId, rerun_downstream: true})
-        });
-        const data = await resp.json();
-        if (data.error) { showToast(`回退失败: ${data.error}`, 'error'); return; }
-        const branchInfo = data.branch ? `（新分支: ${data.branch}）` : '';
-        showToast(`已回退到 step ${stepId}${branchInfo}`, 'success');
-        await refreshWorkspace(agentId);
-        await refreshDag(agentId);
-        const wsId = document.getElementById('workspaceBranch')?.dataset?.taskName || '';
-        refreshTree(wsId);
-    } catch (e) {
-        showToast(`回退失败: ${e}`, 'error');
-    }
 }
 
 function fileIcon(path) {
@@ -2910,6 +2858,18 @@ function renameAgent(agentId) {
     });
 }
 refreshTree();
+
+// 同步 mission filter 按钮状态（初始值可能来自 localStorage，需覆盖 HTML 硬编码的 recent）
+try {
+    document.getElementById('recentMissionFilter').classList.toggle('active', missionFilter === 'recent');
+    document.getElementById('allMissionFilter').classList.toggle('active', missionFilter === 'all');
+} catch (e) {}
+
+// 页面刷新后自动恢复上次查看的 agent 会话（避免"刷新后历史记录没了"）
+try {
+    const lastAgentId = sessionStorage.getItem('lastAgentId');
+    if (lastAgentId) viewAgent(lastAgentId);
+} catch (e) {}
 
 // === 加载服务运行信息（当前工作根目录 project_root）===
 async function loadServerInfo() {

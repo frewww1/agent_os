@@ -45,6 +45,10 @@ class RunStatus(str, Enum):
 
 logger = logging.getLogger("agent_os")
 
+# OOM 兜底：CLI 进程因内存耗尽（退出码 134 = SIGABRT）崩溃时，
+# 自动 --resume 同一会话继续任务。此为该恢复的最大次数。
+MAX_OOM_RETRIES = 3
+
 
 def find_latest_plan_file() -> str | None:
     """返回 ~/.codebuddy/plans/ 下最近修改的 .md 文件路径。"""
@@ -85,7 +89,10 @@ class Agent(BaseModel):
     system_prompt: Optional[str] = None
     goal: Optional[str] = None
     goal_retries: int = 0
+    oom_retries: int = 0
     supervisor: Optional[str] = None
+    # 已向父 agent 汇总过结果的子 agent id（增量 resume：每次只告知新完成的）
+    summarized_children: list[str] = []
     output_events: deque = Field(default_factory=lambda: deque(maxlen=10000))
     turn_markers: list = Field(default_factory=list)
     label: Optional[str] = None
@@ -164,6 +171,8 @@ class Agent(BaseModel):
             "label": self.label, "step_id": self.step_id,
             "system_prompt": self.system_prompt, "goal": self.goal,
             "goal_retries": self.goal_retries,
+            "oom_retries": self.oom_retries,
+            "summarized_children": self.summarized_children,
             "max_goal_retries": self.max_goal_retries, "depth": self.depth,
             "plan_content": self.plan_content, "plan_file": self.plan_file,
             "supervisor": self.supervisor,
@@ -295,7 +304,8 @@ class Agent(BaseModel):
         # 标准模板（prompts.compose）已含 "## Workspace"，此处只补自定义 system_prompt。
         if system_prompt and "## Workspace" not in system_prompt and self.workspace_path:
             system_prompt += "\n\n" + prompts.workspace_block(self.workspace_path)
-        child = (agent_cls or Agent)(backend=self._backend, project_root=self._project_root,
+        child = (agent_cls or self._resolve_child_cls(task_type, interactive))(
+                                     backend=self._backend, project_root=self._project_root,
                                      agent_id=_uuid.uuid4().hex[:10], prompt=prompt,
                                      session_id=str(_uuid.uuid4()),
                                      parent_id=self.agent_id,
@@ -313,6 +323,29 @@ class Agent(BaseModel):
             self._on_child_created(child)
         self.children.append(child)
         return child
+
+    @staticmethod
+    def _resolve_child_cls(task_type: str, interactive: bool) -> type["Agent"]:
+        """按 task_type 选择子 agent 的具体类。
+
+        必须与 _from_serialized 的类型选择一致——否则运行时 spawn 的子
+        agent 会退化成 base Agent（_on_exit_without_report 抛异常），
+        进程退出后 agent 卡在 running。
+        """
+        if task_type == "goal":
+            from .goal import GoalAgent
+            return GoalAgent
+        if task_type == "supervisor":
+            from .supervisor import SupervisorAgent
+            return SupervisorAgent
+        if interactive or task_type == "interactive":
+            from .interactive import InteractiveAgent
+            return InteractiveAgent
+        if task_type == "explore":
+            from .explore import ExploreAgent
+            return ExploreAgent
+        from .task import TaskAgent
+        return TaskAgent
 
     def spawn_children(self, tasks: list[dict], parent_session_id: str = "",
                        wait_strategy: str = "all") -> dict:
@@ -434,8 +467,14 @@ class Agent(BaseModel):
         self.resume(summary, source="os")
 
     def _build_child_results_summary(self) -> str:
+        # 增量汇总：只包含本次新完成的子 agent（已汇报过的跳过），
+        # 避免 resume 时把历史所有子 agent 的结果全部重复告知父 agent。
+        new_children = [c for c in self.children
+                        if c.agent_id not in self.summarized_children]
+        if not new_children:
+            new_children = self.children
         parts = ["子 agent 执行完毕，结果如下：", ""]
-        for i, child in enumerate(self.children, 1):
+        for i, child in enumerate(new_children, 1):
             parts.append(f"子任务 {i}：{child.prompt[:100]}")
             if child.messages:
                 parts.append("过程消息：")
@@ -453,6 +492,10 @@ class Agent(BaseModel):
                 parts.append("最终结果：(未返回结果)")
             parts.append("")
         parts.append("请基于以上结果继续工作。")
+        # 记录本次已汇总的子 agent（下次 resume 不再重复告知）
+        for c in new_children:
+            if c.agent_id not in self.summarized_children:
+                self.summarized_children.append(c.agent_id)
         return "\n".join(parts)
 
     # ----------------------------------------------------------------
@@ -460,12 +503,44 @@ class Agent(BaseModel):
     # ----------------------------------------------------------------
 
     def on_process_exit(self, exit_code: int | None) -> None:
+        # agent 正在被删除（delete_agent 已设置 _deleting）→ 忽略退出回调，
+        # 防止异步 exit 处理把已删除的 agent 重新持久化/复活
+        if getattr(self, "_deleting", False):
+            return
+        # OOM 兜底：CLI 进程内存耗尽崩溃（code=134）时自动恢复会话
+        if self._try_oom_recover(exit_code):
+            return
         if self.status == RunStatus.PLAN_PENDING:
             self._on_plan_pending_exit()
         elif self.status == RunStatus.WAITING:
             self._on_waiting_exit(exit_code)
         elif self.status == RunStatus.RUNNING:
             self._on_running_exit(exit_code)
+
+    def _try_oom_recover(self, exit_code: int | None) -> bool:
+        """OOM 兜底：CLI 进程因 V8 堆耗尽崩溃（退出码 134 = SIGABRT）时，
+        自动 --resume 同一会话继续任务（不截断上下文）。返回 True 表示已触发恢复。"""
+        if (exit_code or 0) != 134:
+            return False
+        if self.user_terminated:
+            return False
+        if self.status not in (RunStatus.RUNNING, RunStatus.WAITING):
+            return False
+        if self.oom_retries >= MAX_OOM_RETRIES:
+            logger.warning(f"[{self.agent_id[:8]}] OOM recovery exhausted ({self.oom_retries}/{MAX_OOM_RETRIES})")
+            return False
+        self.oom_retries += 1
+        logger.warning(
+            f"[{self.agent_id[:8]}] CLI OOM (code=134), auto-resume ({self.oom_retries}/{MAX_OOM_RETRIES})"
+        )
+        self.add_event("system", text=(
+            f"[Agent OS] CLI 进程因内存不足崩溃（exit={exit_code}），"
+            f"已自动恢复会话（第 {self.oom_retries}/{MAX_OOM_RETRIES} 次）。请继续完成当前任务。"
+        ))
+        if not self.resume("继续执行之前的任务，直到完成。", source="os"):
+            logger.warning(f"[{self.agent_id[:8]}] OOM auto-resume failed")
+            return False
+        return True
 
     def _on_plan_pending_exit(self) -> None:
         self._dirty = True
@@ -491,7 +566,15 @@ class Agent(BaseModel):
         self.on_completed()
 
     def _on_exit_without_report(self, exit_code: int | None) -> None:
-        raise NotImplementedError
+        """兜底：task_type 未知（base Agent）时进程退出但未 report。
+
+        直接标记 FAILED 而不是 raise NotImplementedError——否则异常会
+        冒泡到 reader 线程导致 agent 永远卡在 running。
+        """
+        logger.warning(f"[{self.agent_id[:8]}] Exited without report (base agent, code={exit_code})")
+        self._transition(RunStatus.FAILED)
+        self.completed_at = datetime.now()
+        self.on_completed()
 
     # ----------------------------------------------------------------
     #  report.py / send.py / user Done
@@ -519,14 +602,19 @@ class Agent(BaseModel):
         return True
 
     def on_user_done(self) -> None:
-        if self.status != RunStatus.RUNNING:
+        if self.status == RunStatus.COMPLETED:
             return
-        self._terminate_process(timeout=0)
+        # interactive agent 被 Stop 后仍可 Done：从 stopped 转 completed 并通知父 agent
+        if self.status == RunStatus.RUNNING:
+            self._terminate_process(timeout=0)
         self.user_terminated = True
         self._transition(RunStatus.COMPLETED)
+        self.completed_at = datetime.now()
         self.add_event("system", text="[Agent OS] Ended by user (Done).")
         self.add_event("user_done")
         self._try_record_step_completion("(用户手动结束)")
+        # 通知父 agent（否则 interactive Done 后父 agent 一直等待不 resume）
+        self.on_completed()
         self._notify_frontend()
         self.on_completed()
         self._dirty = True
@@ -667,13 +755,30 @@ class Agent(BaseModel):
         if self.workspace_path:
             env["AGENT_OS_WORKSPACE"] = self.workspace_path
 
+        # OOM 防护：长会话 + 大工具结果会撑爆 CLI（Node.js）默认 V8 堆，
+        # 注入 --max-old-space-size 抬高堆上限（可用 AGENT_OS_MAX_OLD_SPACE 覆盖，默认 8GB）。
+        _oom_mb = _os.environ.get("AGENT_OS_MAX_OLD_SPACE", "8192")
+        _opt = f"--max-old-space-size={_oom_mb}"
+        _existing = env.get("NODE_OPTIONS", "").strip()
+        _parts = [p for p in _existing.split() if p and not p.startswith("--max-old-space-size=")]
+        _parts.append(_opt)
+        env["NODE_OPTIONS"] = " ".join(_parts)
+
         cwd = self._project_root
         try:
+            # 提示词中的 $AGENT_OS_WORKSPACE 占位符统一替换为绝对路径，
+            # 避免 agent 依赖环境变量解析路径。
+            ws = self.workspace_path
+            if ws and prompt and "$AGENT_OS_WORKSPACE" in prompt:
+                prompt = prompt.replace("$AGENT_OS_WORKSPACE", ws)
+            sys_prompt = self.build_system_prompt()
+            if ws and sys_prompt and "$AGENT_OS_WORKSPACE" in sys_prompt:
+                sys_prompt = sys_prompt.replace("$AGENT_OS_WORKSPACE", ws)
             handle = self._backend.launch(
                 prompt=prompt, model=model or self.model,
                 session_id=None if resume else self.session_id,
                 resume_session=self.session_id if resume else None,
-                system_prompt=self.build_system_prompt(),
+                system_prompt=sys_prompt,
                 cwd=cwd, env=env,
             )
         except Exception as e:
@@ -713,8 +818,40 @@ class Agent(BaseModel):
             session.wait()
             self._on_exit(session.returncode)
         except Exception as e:
-            self._on_event({"kind": "error", "text": f"[ERROR] {e}"})
+            # 预期终止不产生误导性的 [ERROR]：
+            # - 进程被替换（resume/切换）导致旧 reader 终止（状态由新进程管理）
+            # - 用户停止（状态已由 stop 流程处理）
+            # - 当前进程自然退出（interactive 每轮结束等用户输入）→ 仍需走 _on_exit
+            if self._is_reader_exit_expected(session):
+                current = self._session is session and not self.user_terminated
+                if current:
+                    # 当前进程已退出：走退出流程更新状态，
+                    # 否则 agent 会一直卡在 running
+                    try:
+                        rc = session.poll()
+                    except Exception:
+                        rc = -1
+                    if rc is None:
+                        rc = -1
+                    self._on_exit(rc)
+                else:
+                    logger.debug(f"[{self.agent_id[:8]}] reader stopped (expected): {e}")
+                return
+            msg = str(e).strip()
+            self._on_event({"kind": "error", "text": f"[ERROR] {msg}" if msg else "[ERROR] reader error"})
             self._on_exit(-1)
+
+    def _is_reader_exit_expected(self, session) -> bool:
+        """reader 线程异常是否属于预期终止（不应产生 error 事件）。"""
+        if self.user_terminated:
+            return True
+        if self._session is not session:
+            return True  # 已切换到新进程，旧 reader 终止是预期的
+        try:
+            rc = session.poll()
+        except Exception:
+            rc = None
+        return rc is not None  # 进程已退出（自然退出或被终止）
 
     def _on_event(self, ev: dict) -> None:
         """Reader 线程回调：每个 CLI 事件。"""
@@ -747,7 +884,15 @@ class Agent(BaseModel):
         self.add_event(kind, **payload)
 
     def _on_exit(self, exit_code: int | None) -> None:
-        """Reader 线程回调：进程结束。"""
+        """Reader 线程回调：进程结束。
+
+        幂等：只处理一次。若 _on_exit 内部（如状态转换）抛异常，
+        会冒泡到 reader 的 except 分支并再次进入此处，必须防重，
+        否则可能递归调用导致 reader 崩溃、agent 卡在 running。
+        """
+        if getattr(self, "_exit_fired", False):
+            return
+        self._exit_fired = True
         self.exit_code = exit_code
         logger.info(f"[{self.agent_id[:8]}] Session ended: code={exit_code}")
         self.on_process_exit(exit_code)
@@ -975,6 +1120,9 @@ class Agent(BaseModel):
         kwargs = dict(backend=backend, project_root=project_root, **fields)
         if task_type == "goal":
             return GoalAgent(**kwargs)
+        if task_type == "supervisor":
+            from .supervisor import SupervisorAgent
+            return SupervisorAgent(**kwargs)
         if fields.get("parent_id") is None:
             return RootAgent(**kwargs)
         if fields.get("interactive"):

@@ -69,10 +69,6 @@ class LabelRequest(BaseModel):
     label: str
 
 
-class SwitchBranchRequest(BaseModel):
-    branch: str
-
-
 class PlanDecisionRequest(BaseModel):
     feedback: str = ""
     model: str | None = None

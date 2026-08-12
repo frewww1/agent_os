@@ -25,11 +25,6 @@ def _build_package_in_sys_modules():
     mock_agent_os.AgentOS = MagicMock
     sys.modules["agent_os.agent_os"] = mock_agent_os
 
-    mock_rec = types.ModuleType("agent_os.recorder")
-    mock_rec.Recorder = MagicMock
-    sys.modules["agent_os.recorder"] = mock_rec
-    sys.modules["recorder"] = mock_rec
-
     dash_pkg = types.ModuleType("agent_os.dashboard")
     dash_pkg.__path__ = [os.path.join(AGENT_OS_DIR, "dashboard")]
     dash_pkg.__package__ = "agent_os.dashboard"
@@ -52,12 +47,6 @@ def _build_package_in_sys_modules():
     mock_src_core_agent_os = types.ModuleType("agent_os.src.core.agent_os")
     mock_src_core_agent_os.AgentOS = MagicMock
     sys.modules["agent_os.src.core.agent_os"] = mock_src_core_agent_os
-
-    mock_git = types.ModuleType("agent_os.dashboard.git_utils")
-    mock_git.get_git_branches = MagicMock(return_value=[])
-    mock_git.get_current_branch = MagicMock(return_value="main")
-    mock_git.git_checkout_with_stash = MagicMock(return_value=(True, ""))
-    sys.modules["agent_os.dashboard.git_utils"] = mock_git
 
 
 _build_package_in_sys_modules()

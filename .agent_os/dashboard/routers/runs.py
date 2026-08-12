@@ -32,6 +32,18 @@ async def start_agent(req: RunRequest):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@router.get("/agent/{agent_id}/events")
+async def get_agent_events(agent_id: str, before: str = "", limit: int = 500):
+    """超长会话分页：before 传时间戳取更早事件（空 = 取最近 limit 条）。"""
+    agent_os = get_agent_os()
+    if not agent_os:
+        return JSONResponse({"error": "not initialized"}, status_code=500)
+    result = agent_os.get_agent_events_before(agent_id, before, min(max(limit, 1), 1000))
+    if not result.get("ok"):
+        return JSONResponse({"error": result.get("error", "failed")}, status_code=404)
+    return JSONResponse(result)
+
+
 @router.get("/agent/{agent_id}/stream")
 async def stream_agent(agent_id: str):
     agent_os = get_agent_os()
@@ -91,7 +103,10 @@ async def get_agent(agent_id: str):
             "started_at": agent.started_at.isoformat(),
             "completed_at": agent.completed_at.isoformat() if agent.completed_at else None,
             "exit_code": agent.exit_code,
-            "events": list(agent.output_events),
+            # 超长会话：detail 只回最近 1000 条，更早的由 /agent/{id}/events 分页加载
+            "events": list(agent.output_events)[-1000:],
+            "total_events": len(agent.output_events),
+            "events_capped": len(agent.output_events) >= 10000,
             "turns": len(agent.turn_markers),
             "messages": list(agent.messages),
             "reported_result": agent.reported_result,

@@ -1428,8 +1428,16 @@ details[open] > summary.tool-head { border-bottom: 1px solid var(--line); }
     padding: 10px 14px;
     border-left: 3px solid var(--err);
 }
-.msg-error .msg-role { color: var(--err); }
+.msg-error .msg-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 4px;
+}
+.msg-error .msg-role { color: var(--err); margin-bottom: 0; }
 .msg-error .msg-role::before { content: '✕'; font-weight: 800; }
+.msg-error .msg-time { color: var(--text-2); font-size: 11px; font-family: monospace; }
 .msg-error .msg-body { color: var(--text-0); font-size: 13.5px; }
 .msg-error .msg-actions {
     display: flex;
@@ -3891,6 +3899,23 @@ body {
 .control-deck .tree-children { border-color: #2b313c; }
 .show-archive-btn { min-height: 36px; color: var(--product-muted); background: #151922; border-color: #2d3440; border-radius: 8px; font-family: var(--font-sans); }
 .show-archive-btn:hover { color: var(--product-accent); border-color: rgba(130,146,255,.45); }
+/* 超长会话"加载更早记录"按钮（会话流顶部） */
+.hist-more-btn {
+    margin: 8px auto;
+    padding: 6px 14px;
+    width: fit-content;
+    max-width: 80%;
+    color: var(--text-2, #8a958c);
+    background: rgba(255,255,255,.02);
+    border: 1px dashed rgba(140,160,148,.35);
+    border-radius: 4px;
+    font: 650 9px var(--font-mono);
+    letter-spacing: .06em;
+    text-align: center;
+    cursor: pointer;
+    user-select: none;
+}
+.hist-more-btn:hover { color: var(--deck-signal, #7fb069); border-color: rgba(127,176,105,.55); }
 .control-deck .sidebar-footer {
     min-height: 38px;
     color: var(--product-faint);

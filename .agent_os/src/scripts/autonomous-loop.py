@@ -2,26 +2,26 @@
 """
 autonomous-loop.py — 自主循环状态管理 CLI。
 
-调度 agent 在 skill 的指导下调用此脚本管理循环状态：
-    python .agent_os/autonomous-loop.py --init '<goal_json>'
+调度 agent 在 skill 的指导下调用此脚本管理循环状态（命令路径由系统提示词给出绝对路径）：
+    python autonomous-loop.py --init '<goal_json>'
         初始化循环状态，写入 goal + 从 dag.json 加载的 steps。
 
-    python .agent_os/autonomous-loop.py --status
+    python autonomous-loop.py --status
         打印当前循环状态（JSON），含所有 step 的状态、重试次数、结果。
 
-    python .agent_os/autonomous-loop.py --current
+    python autonomous-loop.py --current
         打印当前待执行的 step 对象（JSON），如果全部完成则打印 {"done": true}。
 
-    python .agent_os/autonomous-loop.py --mark-result <step_id> <PASS|FAIL> '<reason>'
+    python autonomous-loop.py --mark-result <step_id> <PASS|FAIL> '<reason>'
         记录 step 的执行结果。PASS→下一步；FAIL→记录重试（含 feedback）。
 
-    python .agent_os/autonomous-loop.py --get-feedback <step_id>
+    python autonomous-loop.py --get-feedback <step_id>
         打印该 step 的失败反馈（eval reason），用于重试时注入 executor prompt。
 
-    python .agent_os/autonomous-loop.py --is-done
+    python autonomous-loop.py --is-done
         打印 {"done": true} 或 {"done": false}，用于循环终止判断。
 
-状态文件位置：$AGENT_OS_WORKSPACE/loop_state.json（兜底当前目录）。
+状态文件位置：$AGENT_OS_WORKSPACE/loop_state.json（由 Agent OS 注入绝对路径，兜底当前目录）。
 """
 import argparse
 import json

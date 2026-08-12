@@ -3,7 +3,7 @@
 report.py — 子 agent 调用此脚本标记任务完成并汇报最终结果。
 
 用法：
-    python .agent_os/report.py --result "最终执行结果摘要"
+    python report.py --result "最终执行结果摘要"
 
 OS 通过环境变量自动管理 agent_id 和 port，agent 无需关心。
 调用后，OS 会标记你的任务为已完成。当所有并行子 agent 都完成后，主 agent 会被唤醒。

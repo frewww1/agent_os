@@ -5,14 +5,14 @@ rem 记住用户运行目录（启动服务后作为 project_root），避免 cd
 set "USER_ROOT=%cd%"
 cd /d "%~dp0"
 
-:: Check venv
+::: Check venv
 if not exist "..\.venv\Scripts\python.exe" (
     echo [ERROR] Virtual environment not found. Run setup.bat first.
     pause
     exit /b 1
 )
 
-:: Read config
+::: Read config
 set BACKEND=native
 set CLI_NAME=codebuddy
 if exist "%cd%\cli_config.json" (
@@ -22,10 +22,8 @@ if exist "%cd%\cli_config.json" (
 if "%BACKEND%"=="" set BACKEND=native
 if "%CLI_NAME%"=="" set CLI_NAME=codebuddy
 
-:: Kill existing instance on port 8420
-echo Stopping any existing Agent OS...
-for /f "tokens=5" %%a in ('netstat -ano 2^>nul ^| findstr ":8420.*LISTENING"') do taskkill /pid %%a /f /t 2>nul
-timeout /t 2 /nobreak >nul
+::: 多开支持：不杀旧进程。8420 被占用时 main.py 自动分配新端口（8421/8422...）
+echo Agent OS supports multiple instances (auto port allocation). Existing instances are kept.
 
 echo.
 echo ========================================
@@ -35,7 +33,7 @@ echo   CLI:     %CLI_NAME%
 echo ========================================
 echo.
 
-:: Activate venv and start
+::: Activate venv and start
 call ..\.venv\Scripts\activate.bat
 set AGENT_OS_BACKEND=%BACKEND%
 python main.py --root "%USER_ROOT%" --cli "%CLI_NAME%" --backend "%BACKEND%"

@@ -6,7 +6,7 @@
 
 - **Autonomous Loop 自主循环**：Agent 自主完成复杂任务的循环机制 — 执行 → 评估 → 决策 → 修正，无需人工介入，像 Reinforcement Learning 的 Agentic 实现
 - **DAG Graph 编排图**：可视化 DAG 拓扑图，节点状态实时着色，依赖关系一目了然
-- **DAG 任务流水线**：定义步骤依赖，自动并行执行。支持回退到任意 step，从中间重新跑
+- **DAG 任务流水线**：定义步骤依赖，自动并行执行。支持从任意 step 重置重跑（`--rerun` / `--reset-to`）
 - **Supervisor 监督者**：为 Agent 指派专属监督者，持续审查产出并指导修正，记住上下文
 - **Goal 目标评估**：设定任务目标，完成后自动语义判断是否达成，未达成自动重试
 - **多 Agent 协同**：Agent 可动态 spawn 子 Agent，共享 workspace，最多 3 层嵌套
@@ -18,7 +18,6 @@
 ### 环境要求
 
 - Python 3.10+
-- Git
 - 任意一种 AI CLI（三选一）：
   - [CodeBuddy CLI](https://www.codebuddy.ai/)（推荐，原生支持）
   - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)（通过 Native 模式支持）
@@ -50,8 +49,10 @@ agent_os
 
 - 服务默认以 `os.getcwd()` 为 `project_root`，也可 `agent_os --root <路径>` 显式指定
 - `state/`（agent 历史）与 `workspaces/`（任务产物）都创建在运行目录下，项目间互不干扰
-- 启动时自动在运行目录下创建 `.agent_os` junction 指向安装目录，因此 Agent
-  system prompt 中的 `python .agent_os/report.py` 等相对路径调用仍可直接工作
+- 启动时自动在运行目录下创建 `.agent_os` junction 指向安装目录（若运行目录就是
+  安装目录本身则跳过，避免自指循环链接）
+- Agent 提示词中的脚本命令（`dag.py` / `report.py` / `send.py` / `spawn.py`）一律注入
+  **安装目录绝对路径**，不依赖相对路径解析，避免 agent 因路径解析失败而探索环境
 - 首次在新目录运行时，若旧版 state（安装目录 `state/`）存在会自动迁移过去，不丢历史
 
 **Dashboard 内切换目录**：侧边栏底部显示当前工作根目录，点击右侧 `⇄` 打开切换面板
@@ -90,9 +91,14 @@ cd C:\projectB && agent_os          rem 自动到 8421
 
 // 使用 Claude Code
 {"cli": "claude", "backend": "native"}
+
+// 设置默认模型（agent 未单独指定时使用，Dashboard 可逐 agent 覆盖）
+{"cli": "codebuddy", "backend": "native", "default_model": "deepseek-v4-flash-ioa"}
 ```
 
 Native 模式通过 subprocess 启动任意 CLI，理论上支持所有兼容 CodeBuddy/Claude 协议的 CLI 工具。重启生效。
+
+默认模型优先级：`--model` 命令行参数 > `cli_config.json` 的 `default_model` > 内置兜底。
 
 ---
 
@@ -137,9 +143,11 @@ dag.py --ready → 取就绪节点 → 用 Task 工具创建子 Agent → 等待
 
 可以随时从中间某个 step 重新跑，不用从头开始。选择目标 step 后自动完成：
 
-1. **文件恢复**：workspace 文件回退到该 step 执行前的状态
-2. **状态重置**：该 step 及下游全部重置为 pending
-3. **继续调度**：调度 Agent 从该 step 重新执行
+1. **状态重置**：该 step 及下游全部重置为 pending
+2. **继续调度**：调度 Agent 从该 step 重新执行
+
+> 注：git 快照功能当前已禁用，回退仅重置步骤状态，不恢复 workspace 文件。
+> 若需文件级恢复，可手动用 `--rerun` 重新执行该步骤。
 
 ### Supervisor 监督者
 
@@ -174,10 +182,13 @@ Dashboard 中勾选 Supervisor 并填写审查标准即可启用。监督者提�
 
 ### 其他功能
 
-- **流式输出**：实时推送，Markdown 渲染 + 代码高亮 + 工具调用折叠 + diff 视图
+- **流式输出**：实时推送，Markdown 渲染 + 代码高亮 + 工具调用折叠 + diff 视图；SSE 断线自动重连并补齐积压事件
+- **超长会话动态加载**：滚动到顶部自动分页加载更早历史（从持久化源读取，不受内存 1 万条事件上限裁剪影响）
 - **会话回退**：截断对话历史文件，Agent 自动"忘记"被截内容
+- **OOM 兜底**：CLI 进程堆内存耗尽（code=134）时自动 resume 同一会话继续（最多 3 次）；启动时注入 `NODE_OPTIONS=--max-old-space-size=8192` 抬高堆上限（可用环境变量 `AGENT_OS_MAX_OLD_SPACE` 覆盖）
 - **防重复提交**：发送按钮防抖，避免误创建多个 Agent
 - **树状视图**：父子 Agent 关系一目了然
+- **增量汇总**：父 Agent resume 时只告知本轮新完成的子 Agent 结果，不重复历史
 
 ---
 
@@ -188,15 +199,14 @@ Dashboard 中勾选 Supervisor 并填写审查标准即可启用。监督者提�
 ```
 Dashboard (FastAPI + SSE)
     ↓
-ProcessManager (多 Agent 调度核心)
+AgentOS (src/core/agent_os.py，多 Agent 调度核心)
     ↓
 AgentBackend (统一协议)
     ├── NativeBackend (CLI subprocess)
-    ├── CodeBuddySDKBackend (进程内 SDK)
-    └── OmnigentBackend
+    └── CodeBuddySDKBackend (进程内 SDK)
 ```
 
-`AgentBackend` 协议统一了 CLI 和 SDK 两种模式，上层业务代码不感知差异。
+`AgentBackend` 协议统一了 CLI 和 SDK 两种模式，上层业务代码不感知差异。Agent 状态持久化在 `state/agents.db`（SQLite），提示词由 `src/core/agents/prompts.py` 按 agent 类型组合注入。
 
 ### DAG 调度
 
@@ -204,13 +214,13 @@ AgentBackend (统一协议)
 
 **调度算法**：`graphlib.TopologicalSorter` 拓扑排序，支持环检测。`ready_steps()` 返回依赖已满足的 pending step。
 
-**调度 Agent System Prompt**：OS 自动注入完整的 step 列表、执行指令、回退指引。
+**调度 Agent System Prompt**：OS 自动注入完整的 step 列表（含绝对路径的 `dag.py` / `spawn.py` / `report.py` 命令）与执行指令。
 
 **执行流程**：
 
 1. 调度 Agent 读取 dag.json → `dag.py --ready` 取就绪节点
-2. 用 Task 工具批量创建子 Agent，传入 step_id、goal、supervisor
-3. 子 Agent 完成后 OS 自动 `dp.mark_done()` + Git step commit
+2. 用 `spawn.py` 批量创建子 Agent，传入 step_id、goal、supervisor
+3. 子 Agent 完成后 OS 自动 `dag.py --mark-done <id>` 更新 dag.json 状态
 4. 调度 Agent 被 resume，继续下一轮
 
 ### Supervisor 实现
@@ -219,7 +229,7 @@ AgentBackend (统一协议)
 
 ### Workspace 文件记忆
 
-同一任务下所有 Agent 共享 workspace 目录，子 Agent 可直接读写父 Agent 产出的文件。任务文件持久化在 workspace 中，回退操作自动恢复文件到对应快照。
+同一任务下所有 Agent 共享 workspace 目录，子 Agent 可直接读写父 Agent 产出的文件。任务文件持久化在 workspace 中，步骤状态由 `dag.json` 管理（`--mark-done` / `--mark-failed` / `--rerun`）。
 
 ### Agent 规范
 
@@ -231,13 +241,13 @@ AgentBackend (统一协议)
 ## Available Tools
 
 - Create sub-agents: use the Task tool (subagent_type=generative|interactive)
-- report.py: `python .agent_os/report.py --result "<summary>"`
+- report.py: `python <安装目录绝对路径>/report.py --result "<summary>"`（运行时注入绝对路径）
 - send_message: use the SendMessage tool
 ```
 
 #### 子 Agent 创建
 
-父 Agent 通过 Task 工具创建子 Agent，OS 通过 PreToolUse Hook（`.agent_os/src/hooks/task_hook.py`）拦截并转发到 `/api/spawn`。参数通过 `SpawnTask` 模型定义：`prompt`、`type`、`step_id`、`goal`、`supervisor`。
+父 Agent（DAG 调度）通过 `spawn.py --tasks '[...]'` 脚本创建子 Agent（POST `/api/spawn`）；普通 agent 也可用 Task 工具。参数通过 `SpawnTask` 模型定义：`prompt`、`type`、`step_id`、`goal`、`supervisor`。
 
 #### 子 Agent 完成
 
@@ -245,4 +255,4 @@ AgentBackend (统一协议)
 
 ### 会话回退
 
-对话历史存储在 `~/.codebuddy/projects/<key>/<session_id>.jsonl`。回退时找到目标 seq → 截断文件 → 清空内存事件 → Git 回退 → Agent 下次 continue 读到截断历史，自然"忘记"。
+对话历史存储在 `~/.codebuddy/projects/<key>/<session_id>.jsonl`。回退时找到目标 seq → 截断文件（备份 `.bak`）→ 清空内存事件 → Agent 下次 continue 读到截断历史，自然"忘记"被截内容。

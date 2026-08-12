@@ -5,8 +5,8 @@ Agent OS — Web terminal for Claude CLI.
 在输入框中输入 prompt，实时看到 Claude agent 的流式输出。
 
 Usage:
-    python .agent_os/main.py
-    python .agent_os/main.py --port 8420
+    python main.py
+    python main.py --port 8420
 """
 import argparse
 import asyncio
@@ -72,19 +72,28 @@ def _bind_socket(host: str, base_port: int) -> tuple[socket.socket | None, int]:
 
 
 def _load_cli_config():
-    """从 cli_config.json 读取配置，fallback 到 codebuddy + native。"""
+    """从 cli_config.json 读取配置，fallback 到 codebuddy + native。
+
+    返回 (cli, backend, default_model)；default_model 可为空字符串，
+    表示未配置，由调用方决定兜底默认值。
+    """
     import json
     config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cli_config.json")
     try:
         with open(config_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        return data.get("cli", "codebuddy"), data.get("backend", "native")
+        return (
+            data.get("cli", "codebuddy"),
+            data.get("backend", "native"),
+            data.get("default_model", "") or "",
+        )
     except Exception:
-        return "codebuddy", "native"
+        return "codebuddy", "native", ""
 
 
 def main():
-    default_cli, default_backend = _load_cli_config()
+    default_cli, default_backend, default_model_cfg = _load_cli_config()
+    default_model = default_model_cfg or "deepseek-v4-pro"
     parser = argparse.ArgumentParser(description="Agent OS - Web Terminal for Claude CLI")
     parser.add_argument("--port", type=int, default=8420, help="Server port (default: 8420)")
     parser.add_argument("--host", default="127.0.0.1", help="Server host (default: 127.0.0.1)")
@@ -92,8 +101,8 @@ def main():
                         help=f"Backend CLI command (default from config: {default_cli})")
     parser.add_argument("--backend", default=None,
                         help=f"Agent backend: native, codebuddy-sdk, sdk (default from config: {default_backend})")
-    parser.add_argument("--model", default="deepseek-v4-pro",
-                        help="Default model for all agents (default: deepseek-v4-pro). "
+    parser.add_argument("--model", default=default_model,
+                        help=f"Default model for all agents (default from config: {default_model}). "
                              "Can be overridden per-agent in Dashboard.")
     parser.add_argument("--root", default=None,
                         help="Working directory for the CLI process (default: current directory)")

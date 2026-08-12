@@ -116,19 +116,73 @@ def _parse_jsonl_events(os_, agent) -> list[dict]:
     return events
 
 
+def load_full_events(os_, agent) -> list[dict]:
+    """从持久化源 + 内存合并出 agent 的完整事件序列（按 ts 升序）。
+
+    内存 output_events 是 deque(maxlen=10000)，超长会话最早的会被裁剪；
+    完整历史从 DB os_events + jsonl cli_events 重建，再补充内存中
+    尚未落盘的最新 OS 事件（persist 快照之后新增的）。
+    """
+    # 1) DB 持久化的 OS 事件（agent_os 自己的 system/turn/prompt/error 等）
+    os_events: list[dict] = []
+    try:
+        conn = os_._db_conn or _get_connection(os_)
+        row = conn.execute(
+            "SELECT data FROM agents WHERE agent_id = ?", (agent.agent_id,)
+        ).fetchone()
+        if row:
+            r = _json.loads(row["data"])
+            os_events = list(r.get("os_events") or [])
+    except Exception as e:
+        logger.warning(f"load_full_events: read os_events failed for {agent.agent_id[:8]}: {e}")
+
+    # 2) jsonl 里的 CLI 事件（完整历史，不受 deque 裁剪影响）
+    cli_events = _parse_jsonl_events(os_, agent)
+
+    # 3) 合并
+    events: list[dict] = []
+    for ev in cli_events:
+        ev["_src"] = "jsonl"
+        events.append(ev)
+    os_ts: set[str] = set()
+    for e in os_events:
+        e["_src"] = "os"
+        os_ts.add(e.get("ts"))
+        events.append(e)
+    # 内存中未落盘的最新 OS 事件（运行时 add_event 产生、persist 尚未写入的）
+    _OS_KINDS = {"system", "error", "turn", "send", "rewind", "user_done"}
+    for e in agent.output_events:
+        if e.get("kind") in _OS_KINDS and e.get("ts") not in os_ts:
+            ev = dict(e)
+            ev.setdefault("_src", "os")
+            events.append(ev)
+    events.sort(key=lambda e: e.get("ts", ""))
+    return events
+
+
 def _restore_children_tracking(os_) -> None:
-    for agent_id, agent in os_.agents.items():
-        for child_id in agent.children_ids:
-            child = os_.agents.get(child_id)
-            if child:
-                agent._children_completed[child_id] = child.status in (
-                    RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.STOPPED
-                )
-                child.parent = agent
-                agent.children.append(child)
+    """重启后重建父子关系。
+
+    注意：Agent.children_ids 是 property（从 self.children 派生），加载后
+    children 为空，不能据此恢复；改用子 agent 持久化的 parent_id 反向重建。
+    """
+    for agent in os_.agents.values():
+        pid = agent.parent_id
+        if pid and pid in os_.agents:
+            parent = os_.agents[pid]
+            if agent not in parent.children:
+                parent.children.append(agent)
+            agent.parent = parent
+    for agent in os_.agents.values():
+        agent._children_completed = {
+            c.agent_id: c.status in (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.STOPPED)
+            for c in agent.children
+        }
 
 
 def _auto_resume_stalled_parents(os_) -> None:
+    # 重启后不自动 resume：保留 waiting/running 状态由用户决定是否继续，
+    # 仅对 supervisor/goal 的 RUNNING 做保守处理（审查流程无法原地恢复，标记完成）。
     for agent_id, agent in list(os_.agents.items()):
         if agent.interactive or not agent.session_id:
             continue
@@ -148,8 +202,6 @@ def load_agents_from_disk(os_) -> None:
     conn = _get_connection(os_)
     os_._db_conn = conn
 
-    _migrate_from_json(os_, conn)
-
     seen_ids: set[str] = set()
     total = 0
     try:
@@ -162,11 +214,6 @@ def load_agents_from_disk(os_) -> None:
             if not aid or aid in seen_ids:
                 continue
             seen_ids.add(aid)
-            status_str = row["status"]
-            if status_str == "waiting":
-                os_._originally_waiting.add(aid)
-            if status_str in ("running", "waiting"):
-                status_str = "stopped"
 
             try:
                 r = _json.loads(row["data"])
@@ -174,6 +221,15 @@ def load_agents_from_disk(os_) -> None:
             except (_json.JSONDecodeError, TypeError):
                 logger.warning(f"load_agents: corrupted data for {aid}")
                 continue
+
+            status_str = row["status"]
+            # waiting 保留：父 agent 等子 agent，重启后保持等待状态由用户决定是否继续
+            if status_str == "running":
+                if not r.get("interactive", False):
+                    # 非 interactive 的 CLI 进程已随重启消亡，无法原地继续 → stopped
+                    status_str = "stopped"
+                # interactive 保持 running：turn 结束 CLI 退出是常态，
+                # 重启后等待用户继续对话 / 点 Done
 
             from ..core.agents import Agent
             agent = Agent(
@@ -214,54 +270,14 @@ def load_agents_from_disk(os_) -> None:
 
     logger.info(f"loaded {total} historical agents ({len(seen_ids)} unique) from sqlite")
     _restore_children_tracking(os_)
+    # 修复：重启恢复的 agent 不会经过 start_agent，导致 _on_step_done/_on_step_start/
+    # _on_child_created 回调丢失（base.py 构造时置 None）。后果：spawn 的子 agent
+    # 无法注册进 os_.agents 索引（dashboard 无法交互/报表 404），DAG 步骤也无法自动更新。
+    # 这里对缺失回调的 agent 重新绑定到 AgentOS 实例方法。
+    for _agent in os_.agents.values():
+        if not _agent._on_child_created:
+            _agent._on_step_done = os_._on_agent_step_done
+            _agent._on_step_start = os_._on_agent_step_start
+            _agent._on_child_created = os_._register_child
+            logger.info(f"[{_agent.agent_id[:8]}] re-bound step/child callbacks after restore")
     _auto_resume_stalled_parents(os_)
-
-
-def _migrate_from_json(os_, conn: sqlite3.Connection) -> None:
-    count = conn.execute("SELECT COUNT(*) FROM agents").fetchone()[0]
-    if count > 0:
-        return
-
-    candidates: list[str] = []
-    ws_state_dir = os.path.join(os_._state_dir, "workspaces")
-    if os.path.isdir(ws_state_dir):
-        for ws_name in os.listdir(ws_state_dir):
-            ws_file = os.path.join(ws_state_dir, ws_name, "runs.json")
-            if os.path.isfile(ws_file):
-                candidates.append(ws_file)
-    workspaces_dir = os.path.join(os_.project_root, ".agent_os", "workspaces")
-    if os.path.isdir(workspaces_dir):
-        for ws_name in os.listdir(workspaces_dir):
-            old_ws_state = os.path.join(workspaces_dir, ws_name, "state", "runs.json")
-            if os.path.exists(old_ws_state):
-                candidates.append(old_ws_state)
-    if not candidates:
-        return
-
-    seen: set[str] = set()
-    migrated = 0
-    now = datetime.now().isoformat()
-
-    for file_path in candidates:
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                data = _json.load(f)
-            data = sanitize(data)
-            for r in data.get("runs", []):
-                rid = r.get("run_id")
-                if not rid or rid in seen:
-                    continue
-                seen.add(rid)
-                ws = r.get("workspace_path") or "_global"
-                conn.execute(
-                    """INSERT OR IGNORE INTO agents (agent_id, workspace, status, data, updated_at)
-                       VALUES (?, ?, ?, ?, ?)""",
-                    (rid, ws, r.get("status", "completed"), _json.dumps(r, ensure_ascii=False), now)
-                )
-                migrated += 1
-        except Exception as e:
-            logger.warning(f"migrate from {file_path} failed: {e}")
-
-    if migrated > 0:
-        conn.commit()
-        logger.info(f"migrated {migrated} agents from JSON files to sqlite")

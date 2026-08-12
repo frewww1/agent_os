@@ -1,13 +1,12 @@
-"""Export + Diff + Recordings API — /api/agent/{id}/export, /api/agent/{id}/diffs, /api/recordings, /api/completions, /api/models"""
+"""Export API — /api/agent/{id}/export, /api/completions, /api/models"""
 import json
-import os
 import re
 from pathlib import Path
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse, Response
 
-from .deps import get_agent_os, get_project_root, safe_run as _safe_run
+from .deps import get_agent_os
 
 router = APIRouter(prefix="/api", tags=["export"])
 
@@ -18,65 +17,6 @@ async def list_models(refresh: bool = False):
     if not agent_os:
         return JSONResponse({"models": []})
     return JSONResponse({"models": agent_os.list_models(refresh=refresh)})
-
-
-@router.get("/agent/{agent_id}/diffs")
-async def get_agent_diffs(agent_id: str):
-    agent_os = get_agent_os()
-    if not agent_os:
-        return JSONResponse({"error": "not initialized"}, status_code=500)
-    if not agent_os.recorder:
-        return JSONResponse({"error": "git disabled", "turns": [], "agent": None, "steps": []})
-    agent = agent_os.get_agent(agent_id)
-    if not agent or not agent.workspace_path:
-        return JSONResponse({"error": "agent not found or no workspace"}, status_code=404)
-    ws = agent.workspace_path
-    result = {"turns": [], "agent": None, "steps": []}
-    for tc in agent_os.recorder.turn_commits(agent_id, ws):
-        turn_diff = _commit_diff(tc["sha"], ws)
-        result["turns"].append({
-            "turn": tc["turn"], "sha": tc["sha"][:8],
-            "diff": turn_diff["diff"], "files": turn_diff["files"],
-        })
-    if result["turns"]:
-        first_sha = result["turns"][0]["sha"]
-        last_sha = result["turns"][-1]["sha"]
-        full_sha = f"{first_sha}..{last_sha}" if first_sha != last_sha else last_sha
-        agent_diff = _commit_diff(full_sha, ws, is_range=(first_sha != last_sha))
-        result["agent"] = {
-            "sha": full_sha, "diff": agent_diff["diff"], "files": agent_diff["files"],
-        }
-    for sc in agent_os.recorder.list_step_commits(ws):
-        step_diff = _commit_diff(sc["sha"], ws)
-        result["steps"].append({
-            "step_id": sc["step_id"], "sha": sc["sha"][:8],
-            "diff": step_diff["diff"], "files": step_diff["files"],
-        })
-    return JSONResponse(result)
-
-
-def _commit_diff(sha: str, ws: str, is_range: bool = False) -> dict:
-    try:
-        if is_range:
-            r = _safe_run(["git", "diff", sha], cwd=ws, capture_output=True, text=True, timeout=15)
-        else:
-            parent = _safe_run(["git", "rev-parse", f"{sha}~1"], cwd=ws, capture_output=True, text=True, timeout=10)
-            if parent.returncode == 0 and parent.stdout.strip():
-                r = _safe_run(["git", "diff", f"{sha}~1", sha], cwd=ws, capture_output=True, text=True, timeout=15)
-            else:
-                r = _safe_run(["git", "show", "--format=", sha], cwd=ws, capture_output=True, text=True, timeout=15)
-        diff = r.stdout.strip()
-        files = []
-        for line in diff.split("\n"):
-            if line.startswith("diff --git "):
-                parts = line.split(" ")
-                if len(parts) >= 3:
-                    f = parts[2][2:]
-                    if f and not f.startswith("runs/") and f != "dag.json":
-                        files.append(f)
-        return {"diff": diff[:5000], "files": files}
-    except Exception:
-        return {"diff": "", "files": []}
 
 
 @router.get("/agent/{agent_id}/export")
@@ -196,11 +136,4 @@ async def get_completions():
     })
 
 
-@router.get("/recordings")
-async def get_recordings():
-    return JSONResponse([])  # TODO: git 功能暂时禁用
 
-
-@router.get("/recording/{workspace_id}/{agent_id}/diff")
-async def get_recording_diff(workspace_id: str, agent_id: str):
-    return JSONResponse({"error": "git recordings disabled"}, status_code=503)

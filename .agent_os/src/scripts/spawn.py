@@ -2,10 +2,10 @@
 """
 spawn.py — Agent 调用此脚本通知 OS 派发子 agent。
 
-用法（Agent 在 Bash 中调用）：
-    python .agent_os/spawn.py --tasks '[{"prompt":"任务1"},{"prompt":"任务2"}]'
-    python .agent_os/spawn.py --tasks '[{"prompt":"...", "agent_name":"策划需求分析智能体"}]' --wait all
-    python .agent_os/spawn.py --tasks '[...]' --poll   # 阻塞等待子 agent 完成并返回结果
+用法（Agent 在 Bash 中调用，命令路径由系统提示词给出绝对路径）：
+    python spawn.py --tasks '[{"prompt":"任务1"},{"prompt":"任务2"}]'
+    python spawn.py --tasks '[{"prompt":"...", "agent_name":"策划需求分析智能体"}]' --wait all
+    python spawn.py --tasks '[...]' --poll   # 阻塞等待子 agent 完成并返回结果
 
 参数：
     --tasks   JSON 数组，每个元素 {"prompt": "...", "agent_name": "可选",
@@ -155,7 +155,7 @@ def main():
         result = json.loads(resp.read().decode())
     except urllib.error.URLError as e:
         print(f"[ERROR] Cannot reach Agent OS at port {args.port}: {e}", file=sys.stderr)
-        print("Make sure Agent OS is running: python .agent_os/main.py", file=sys.stderr)
+        print("Make sure Agent OS is running (start.bat / python main.py)", file=sys.stderr)
         sys.exit(1)
     except Exception as e:
         print(f"[ERROR] {e}", file=sys.stderr)

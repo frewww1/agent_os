@@ -3,8 +3,8 @@ import asyncio
 import json as _json
 import logging
 import os
+import queue
 import re
-import shutil
 import subprocess
 import threading
 from datetime import datetime
@@ -14,7 +14,7 @@ from .dag import planner as dp
 from .env_config import build_agent_env
 from .agents import Agent, RootAgent
 from .agents.base import RunStatus
-from ..persistence.sqlite import load_agents_from_disk, save_agents_to_disk
+from ..persistence.sqlite import load_agents_from_disk, save_agents_to_disk, load_full_events
 from ..agent import get_backend
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -56,8 +56,6 @@ class AgentOS:
 
         self.agents: dict[str, Agent] = {}
         self._models_cache: list[str] | None = None
-        self.recorder = None
-        self._originally_waiting: set[str] = set()
         self.MAX_GOAL_RETRIES = 5
 
         if loop is not None:
@@ -74,7 +72,6 @@ class AgentOS:
 
         # state 跟随 project_root（CLI 运行目录），实现多项目状态隔离
         os.makedirs(self._state_dir, exist_ok=True)
-        self._migrate_legacy_state()
         self._ensure_agent_os_link()
 
         self._persist_lock = threading.Lock()
@@ -88,6 +85,21 @@ class AgentOS:
         self._idle_timeout_sec = 20 * 60
         self._timeout_task = self._loop.create_task(self._timeout_watcher())
 
+    @staticmethod
+    def _fallback_model() -> str:
+        """兜底默认模型：优先取 cli_config.json 的 default_model，否则用内置默认。"""
+        import json as _json
+        try:
+            cfg_path = os.path.join(PROJECT_ROOT, "cli_config.json")
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                data = _json.load(f)
+            m = (data.get("default_model") or "").strip()
+            if m:
+                return m
+        except Exception:
+            pass
+        return "deepseek-v4-pro"
+
     @property
     def _state_dir(self) -> str:
         """state 目录动态跟随 project_root —— 切换目录时无需重建实例。"""
@@ -95,24 +107,10 @@ class AgentOS:
 
     # region 部署解耦
 
-    def _migrate_legacy_state(self) -> None:
-        """旧版本 state 固定在安装目录（PROJECT_ROOT/state），新版本跟随
-        project_root。若新位置尚无数据而旧位置有，一次性复制迁移。"""
-        try:
-            new_db = os.path.join(self._state_dir, "agents.db")
-            old_db = os.path.join(PROJECT_ROOT, "state", "agents.db")
-            if os.path.isfile(old_db) and not os.path.isfile(new_db):
-                os.makedirs(self._state_dir, exist_ok=True)
-                shutil.copy2(old_db, new_db)
-                logger.info(f"migrated legacy state db: {old_db} -> {new_db}")
-        except Exception as e:
-            logger.warning(f"legacy state migration failed: {e}")
-
     def _ensure_agent_os_link(self) -> None:
-        """全局部署模式下，project_root 下可能没有 .agent_os 目录，而 agent
-        system prompt 中硬编码 `python .agent_os/report.py` 等相对路径调用。
-        若 project_root/.agent_os 不存在，则创建 junction 指向安装目录
-        （PROJECT_ROOT），使相对路径调用自动可用。"""
+        """全局部署模式下，project_root 下可能没有 .agent_os 目录。若
+        project_root/.agent_os 不存在，则创建 junction 指向安装目录
+        （PROJECT_ROOT），使 agent 的 `python <绝对路径>/dag.py` 等命令可用。"""
         try:
             link = os.path.join(self.project_root, ".agent_os")
             if os.path.isdir(link):
@@ -121,6 +119,10 @@ class AgentOS:
                 logger.warning(f"{link} exists but is not a directory; skip junction")
                 return
             install_dir = os.path.abspath(PROJECT_ROOT)
+            # 工作根就是安装目录（或 .agent_os 就在其中）时，
+            # 再创建 junction 会形成"自指向自身"的循环链接，直接跳过。
+            if os.path.abspath(link) == install_dir:
+                return
             os.makedirs(os.path.dirname(link), exist_ok=True)
             if os.name == "nt":
                 res = subprocess.run(
@@ -250,12 +252,10 @@ class AgentOS:
 
         # 2) 清空内存索引（旧目录 agents 已落盘，切换后由新目录历史接管）
         self.agents.clear()
-        self._originally_waiting.clear()
 
         # 3) 改路径 + 对新目录做首次进入处理
         self.project_root = new_root
         os.makedirs(self._state_dir, exist_ok=True)
-        self._migrate_legacy_state()
         self._ensure_agent_os_link()
 
         # 4) 加载新目录历史（新建连接，指向新路径）
@@ -341,13 +341,11 @@ class AgentOS:
         agent_id = _uuid.uuid4().hex[:10]
         session_id = str(_uuid.uuid4())
         if model is None:
-            model = self.default_model or "deepseek-v4-pro"
+            model = self.default_model or self._fallback_model()
         env = build_agent_env(agent_id, self.project_root, self.port, workspace_name, env_extras)
         if env_extras:
             env.update(env_extras)
         if not parent_id and not system_prompt:
-            # workspace 一定由 build_agent_env 设置（绝对路径），fallback 交给
-            # _make_system_prompt 用 $AGENT_OS_WORKSPACE 兜底
             system_prompt = RootAgent._make_system_prompt(
                 env.get("AGENT_OS_WORKSPACE", ""))
 
@@ -396,7 +394,10 @@ class AgentOS:
 
     def complete_interactive(self, agent_id: str) -> bool:
         agent = self._get_agent(agent_id)
-        if not agent or agent.status != RunStatus.RUNNING:
+        if not agent:
+            return False
+        # interactive agent 被 Stop 后仍可 Done（从 stopped → completed，通知父 agent）
+        if agent.status not in (RunStatus.RUNNING, RunStatus.STOPPED):
             return False
         agent.on_user_done()
         return True
@@ -451,6 +452,8 @@ class AgentOS:
         if recursive:
             for child_id in list(agent.children_ids):
                 deleted += self.delete_agent(child_id, recursive=True)
+        # 防止 terminate 触发的异步 exit 回调把已删除的 agent 重新持久化（"复活"）
+        setattr(agent, "_deleting", True)
         if agent.status == RunStatus.RUNNING:
             agent.terminate()
         if agent.parent_id:
@@ -611,6 +614,29 @@ class AgentOS:
     def get_agent(self, agent_id: str) -> Agent | None:
         return self.agents.get(agent_id)
 
+    def get_agent_events_before(self, agent_id: str, before_ts: str = "", limit: int = 500) -> dict:
+        """超长会话分页：返回 ts < before_ts 的事件（按时间升序，最多 limit 条）。
+
+        数据源为持久化全量（DB os_events + jsonl cli_events），不受内存
+        deque(maxlen=10000) 裁剪影响，可翻到最早的历史。
+        """
+        agent = self.agents.get(agent_id)
+        if not agent:
+            return {"ok": False, "error": "agent not found"}
+        try:
+            events = load_full_events(self, agent)
+        except Exception as e:
+            return {"ok": False, "error": f"load events failed: {e}"}
+        older = events if not before_ts else [e for e in events if e.get("ts", "") < before_ts]
+        page = older[-limit:]
+        return {
+            "ok": True,
+            "events": page,
+            "has_more": len(older) > len(page),
+            "oldest_ts": older[0].get("ts", "") if older else "",
+            "total_events": len(events),
+        }
+
     async def stream_output(self, agent_id: str) -> AsyncGenerator[str, None]:
         agent = self.agents.get(agent_id)
         if not agent:
@@ -618,10 +644,18 @@ class AgentOS:
         loop = asyncio.get_event_loop()
         while True:
             try:
-                event = await asyncio.wait_for(
-                    loop.run_in_executor(None, agent._event_queue.get), timeout=1.0
+                # get(timeout=1)：executor 线程最多阻塞 1 秒自动返回，
+                # 不会产生"僵尸 get"线程（旧实现无超时 get + wait_for 取消不了
+                # 线程，导致多个线程同时抢事件、事件被僵尸线程拿走而 SSE 丢失）
+                event = await loop.run_in_executor(
+                    None, lambda: agent._event_queue.get(timeout=1)
                 )
                 yield _json.dumps(event, ensure_ascii=False)
+            except queue.Empty:
+                # 仅终结态断开连接；RUNNING/WAITING（含 interactive 等输入、
+                # 父 agent 等子 agent）保持长连接，实时推送事件
+                if agent.status in (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.STOPPED):
+                    break
             except asyncio.TimeoutError:
-                if agent.status != RunStatus.RUNNING:
+                if agent.status in (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.STOPPED):
                     break

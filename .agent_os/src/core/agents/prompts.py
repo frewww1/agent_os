@@ -7,6 +7,12 @@
 """
 import os
 
+# 安装目录（.agent_os）绝对路径：prompts.py 位于 .agent_os/src/core/agents/，
+# dirname × 3 = .agent_os。提示词中的脚本命令一律使用绝对路径，
+# 避免 agent 因相对路径解析失败而花时间探索环境。
+_AOS_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_AOS_STR = _AOS_DIR.replace("\\", "/")
+
 _WS_DESC = (
     "The workspace is the **shared, persistent context** for this task: "
     "all agents in the same task read and write files here. Write your "
@@ -16,12 +22,13 @@ _WS_DESC = (
 
 
 def workspace_block(workspace_path, header="Shared workspace"):
-    """2) workspace —— 所有 agent 都需要。"""
-    ws = workspace_path or os.environ.get("AGENT_OS_WORKSPACE", "") or "(see $AGENT_OS_WORKSPACE)"
+    """2) workspace —— 所有 agent 都需要。给出绝对路径，不使用 $AGENT_OS_WORKSPACE 占位符。"""
+    ws = workspace_path or os.environ.get("AGENT_OS_WORKSPACE", "") or "(unknown)"
     return (
         "## Workspace\n\n"
         f"{header}: {ws}\n"
-        "The env var $AGENT_OS_WORKSPACE points to this absolute path.\n\n"
+        "Use this absolute path directly when reading or writing task files "
+        "(do NOT rely on any env var).\n\n"
         + _WS_DESC
     )
 
@@ -34,9 +41,9 @@ def dag_block(steps):
     lines.append("")
     lines.append(
         "Drive the workflow with scripts: "
-        "`python .agent_os/dag.py --ready` to get runnable steps, "
+        f"`python {_AOS_STR}/dag.py --ready` to get runnable steps, "
         "spawn each via the Task tool (keep `step_id`), "
-        "`python .agent_os/dag.py --mark-done <step_id>` after each step, "
+        f"`python {_AOS_STR}/dag.py --mark-done <step_id>` after each step, "
         "use `--rerun`/`--add-step` for dynamic changes."
     )
     return "\n".join(lines)
@@ -53,16 +60,16 @@ def tools_block(task_type):
     """4) report.py / send.py —— 所有 agent；supervisor/goal 定制描述。"""
     if task_type == "supervisor":
         return (
-            "- report.py: submit PASS verdict → "
-            "`python .agent_os/report.py --result \"<verdict>\"`\n"
-            "- send.py: submit CORRECTION feedback → "
-            "`python .agent_os/send.py --msg \"<feedback>\"`"
+            f"- report.py: submit PASS verdict → "
+            f"`python {_AOS_STR}/report.py --result \"<verdict>\"`\n"
+            f"- send.py: submit CORRECTION feedback → "
+            f"`python {_AOS_STR}/send.py --msg \"<feedback>\"`"
         )
     if task_type == "goal":
-        return "- report.py: reply verdict → `python .agent_os/report.py --result \"YES/NO\"`"
+        return f"- report.py: reply verdict → `python {_AOS_STR}/report.py --result \"YES/NO\"`"
     return (
-        "- report.py: `python .agent_os/report.py --result \"<summary>\"`\n"
-        "- send.py: `python .agent_os/send.py --msg \"<message>\"`"
+        f"- report.py: `python {_AOS_STR}/report.py --result \"<summary>\"`\n"
+        f"- send.py: `python {_AOS_STR}/send.py --msg \"<message>\"`"
     )
 
 
@@ -98,7 +105,7 @@ def compose(task_type, workspace_path, *, task_prompt="", dag_steps=None,
     if task_type in ("generative", "explore"):
         blocks.append(
             "## How to Complete\n\n"
-            "When done, call `python .agent_os/report.py --result \"<summary>\"`.\n"
+            f"When done, call `python {_AOS_STR}/report.py --result \"<summary>\"`.\n"
             "- report.py is MANDATORY. Exiting without it = FAILED."
         )
     elif task_type == "interactive":

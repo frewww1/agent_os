@@ -1,4 +1,4 @@
-"""Workspace API 路由 — /api/workspace*, /api/agent/{id}/workspace*, /api/branch/*"""
+"""Workspace API 路由 — /api/workspace*, /api/agent/{id}/workspace*"""
 import base64
 import json
 import platform as _pf
@@ -7,8 +7,6 @@ from pathlib import Path
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
-from ..models import SwitchBranchRequest
-from ..git_utils import get_git_branches, get_current_branch, git_checkout_with_stash
 from .deps import get_agent_os, get_project_root, safe_run as _safe_run
 
 router = APIRouter(prefix="/api", tags=["workspace"])
@@ -20,13 +18,6 @@ def _workspaces_dir() -> Path:
     if root:
         return root / "workspaces"
     return Path(__file__).parent.parent.parent / "workspaces"
-
-
-def _get_git_dir() -> Path | None:
-    root = get_project_root()
-    if root and (root / ".git").is_dir():
-        return root
-    return None
 
 
 def _get_workspace_dir(agent_id: str) -> Path:
@@ -113,27 +104,6 @@ async def delete_workspace(req: dict):
             deleted_roots += 1
             deleted_runs += n
 
-    deleted_branches = []
-    git_dir = _get_git_dir()
-    if git_dir:
-        branches = get_git_branches(git_dir, task_name=name)
-        for b in branches:
-            branch_name = b["name"]
-            current = get_current_branch(git_dir)
-            if branch_name == current:
-                try:
-                    _safe_run(["git", "checkout", "master"], cwd=str(git_dir),
-                            capture_output=True, timeout=10)
-                except Exception:
-                    pass
-            try:
-                r = _safe_run(["git", "branch", "-D", branch_name], cwd=str(git_dir),
-                            capture_output=True, text=True, timeout=10)
-                if r.returncode == 0:
-                    deleted_branches.append(branch_name)
-            except Exception:
-                pass
-
     purged = []
     for wp in ws_paths_to_purge:
         try:
@@ -151,8 +121,7 @@ async def delete_workspace(req: dict):
 
     return JSONResponse({
         "deleted_runs": deleted_runs, "deleted_roots": deleted_roots,
-        "purged_dirs": len(purged), "deleted_branches": len(deleted_branches),
-        "workspace": name,
+        "purged_dirs": len(purged), "workspace": name,
     })
 
 
@@ -160,11 +129,8 @@ async def delete_workspace(req: dict):
 async def list_workspace_files(agent_id: str):
     workspace_dir = _get_workspace_dir(agent_id)
     if not workspace_dir.exists():
-        return JSONResponse({"files": [], "branches": []})
+        return JSONResponse({"files": [], "task_name": ""})
     task_name = workspace_dir.name
-    git_base = get_project_root() or workspace_dir
-    branches = get_git_branches(git_base, task_name=task_name)
-    current_branch = get_current_branch(git_base)
     SKIP_DIRS = {".git"}
     SKIP_FILES = {".gitignore", ".gitattributes", ".gitmodules", ".gitkeep"}
     files = []
@@ -182,10 +148,7 @@ async def list_workspace_files(agent_id: str):
         rel = "/".join(rel_parts)
         stat = p.stat()
         files.append({"path": rel, "size": stat.st_size, "mtime": stat.st_mtime})
-    return JSONResponse({
-        "files": files, "branches": branches,
-        "current_branch": current_branch, "task_name": task_name,
-    })
+    return JSONResponse({"files": files, "task_name": task_name})
 
 
 @router.get("/agent/{agent_id}/workspace/file")
@@ -206,50 +169,4 @@ async def get_workspace_file(agent_id: str, path: str):
         return JSONResponse({"path": path, "type": "binary", "content": content})
 
 
-@router.post("/run/{run_id}/workspace/branch")
-async def switch_branch(run_id: str, req: SwitchBranchRequest):
-    git_base = get_project_root() or _get_workspace_dir(run_id)
-    if not (git_base / ".git").is_dir():
-        return JSONResponse({"ok": False, "error": "not a git repository"})
-    result = git_checkout_with_stash(git_base, req.branch)
-    if result["ok"]:
-        return JSONResponse({"ok": True, "branch": result["branch"], "warning": result.get("warning")})
-    return JSONResponse({"ok": False, "error": result["error"]})
 
-
-@router.post("/agent/{agent_id}/workspace/branch/create")
-async def create_branch(agent_id: str, req: SwitchBranchRequest):
-    git_base = get_project_root() or _get_workspace_dir(agent_id)
-    if not (git_base / ".git").is_dir():
-        return JSONResponse({"ok": False, "error": "not a git repository"})
-    branch = req.branch
-    wdir = str(git_base)
-    r = _safe_run(["git", "rev-parse", "--verify", branch], cwd=wdir, capture_output=True, timeout=10)
-    if r.returncode == 0:
-        result = git_checkout_with_stash(git_base, branch)
-    else:
-        result = git_checkout_with_stash(git_base, branch, create=True)
-    if result["ok"]:
-        return JSONResponse({"ok": True, "branch": result["branch"], "warning": result.get("warning")})
-    return JSONResponse({"ok": False, "error": result["error"]})
-
-
-@router.delete("/branch/{branch_name}")
-async def delete_branch(branch_name: str):
-    git_dir = _get_git_dir()
-    if not git_dir:
-        return JSONResponse({"ok": False, "error": "not a git repository"}, status_code=400)
-    wdir = str(git_dir)
-    r = _safe_run(["git", "rev-parse", "--verify", branch_name], cwd=wdir, capture_output=True, timeout=10)
-    if r.returncode != 0:
-        return JSONResponse({"ok": False, "error": f"分支 '{branch_name}' 不存在"}, status_code=404)
-    current = get_current_branch(git_dir)
-    if branch_name == current:
-        return JSONResponse({"ok": False, "error": "不能删除当前所在分支"}, status_code=400)
-    try:
-        result = _safe_run(["git", "branch", "-D", branch_name], cwd=wdir, capture_output=True, text=True, timeout=10)
-        if result.returncode != 0:
-            return JSONResponse({"ok": False, "error": result.stderr.strip()})
-        return JSONResponse({"ok": True, "branch": branch_name})
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)

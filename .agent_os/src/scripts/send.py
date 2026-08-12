@@ -3,7 +3,7 @@
 send.py — 子 agent 调用此脚本向主 agent 发送中间消息（不结束任务）。
 
 用法：
-    python .agent_os/send.py --msg "中间进度汇报或任何信息"
+    python send.py --msg "中间进度汇报或任何信息"
 
 注意：这只是发送消息，不会结束你的任务。要结束任务请用 report.py。
 """

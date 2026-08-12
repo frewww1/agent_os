@@ -1,28 +1,28 @@
 #!/usr/bin/env python3
 """dag.py — 调度 agent 操作 dag.json 的本地 CLI。
 
-用法（调度 agent 在 Bash 中调用，cwd 即 workspace）：
-    python .agent_os/dag.py --ready
+用法（调度 agent 在 Bash 中调用，命令路径由系统提示词给出绝对路径）：
+    python dag.py --ready
         打印当前 ready 的 step 对象数组（JSON，按拓扑序）。每项含
         id / step_id(=id) / prompt / agent_name / model，可直接拷进
-        spawn.py 的 --tasks（务必保留 step_id 字段，OS 才会打 step commit）。
+        spawn.py 的 --tasks（务必保留 step_id 字段，OS 才会标记 step 状态）。
 
-    python .agent_os/dag.py --status
+    python dag.py --status
         打印所有 step 的状态表（JSON，按拓扑序）：id / name / status /
         depends_on。用于自查「当前跑到哪一步」。
 
-    python .agent_os/dag.py --mark-done <step_id>
+    python dag.py --mark-done <step_id>
         把该 step 的 status 置为 done（带 completed_at），写回 dag.json。
 
-    python .agent_os/dag.py --mark-failed <step_id>
+    python dag.py --mark-failed <step_id>
         把该 step 的 status 置为 failed（带 completed_at），写回 dag.json。
 
-    python .agent_os/dag.py --rerun <step_id>
+    python dag.py --rerun <step_id>
         把该 step + 所有传递下游 status 重置为 pending，写回，
         并打印这批被重置的 step id（JSON 数组，拓扑序）。
         仅改 DAG 状态，不动 workspace 文件。
 
-    python .agent_os/dag.py --add-step '<json>'
+    python dag.py --add-step '<json>'
         【动态编排】运行时往 dag.json 追加一个新节点。json 形如：
           {"id":"gen_test","name":"测试用例生成","prompt":"...",
            "depends_on":["code_dev"],"agent_name":"测试用例生成智能体",
@@ -31,13 +31,11 @@
         然后 --ready 取出、spawn.py 派发。校验失败（id 重复/依赖缺失/成环）
         非零退出并打印原因。
 
-    python .agent_os/dag.py --reset-to <step_id>
-        【配合 git 回退】把该 step + 下游重置为 pending（同 --rerun 的状态部分），
-        打印受影响 id（JSON 数组）。与 OS 的 /api/run/{id}/dag/checkout 配合：
-        API 先 git checkout 回退 workspace 文件，再调本命令同步 DAG 状态。
-        如只想本地重置状态不回退文件，用 --rerun 即可。
+    python dag.py --reset-to <step_id>
+        把该 step + 下游重置为 pending（同 --rerun 的状态部分），
+        打印受影响 id（JSON 数组）。如只想重置状态，用 --rerun 即可。
 
-dag.json 位置：$AGENT_OS_WORKSPACE/dag.json（兜底当前目录）。
+dag.json 位置：$AGENT_OS_WORKSPACE/dag.json（由 Agent OS 注入绝对路径，兜底当前目录）。
 注：running 态由 Agent OS 在 spawn 时自动写入（task 带 step_id 即触发），
     调度 agent 不需要手动标记 running。
 """
