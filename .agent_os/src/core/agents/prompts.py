@@ -7,10 +7,12 @@
 """
 import os
 
-# 安装目录（.agent_os）绝对路径：prompts.py 位于 .agent_os/src/core/agents/，
-# dirname × 3 = .agent_os。提示词中的脚本命令一律使用绝对路径，
-# 避免 agent 因相对路径解析失败而花时间探索环境。
-_AOS_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# 安装目录（.agent_os）绝对路径。prompts.py 位于 .agent_os/src/core/agents/，
+# 需要 dirname × 4 才能到 .agent_os（× 3 会落在 .agent_os/src，脚本路径会
+# 多出 src 导致 report.py/send.py/dag.py 找不到）。提示词中的脚本命令一律
+# 使用绝对路径，避免 agent 因相对路径解析失败而花时间探索环境。
+_AOS_DIR = os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 _AOS_STR = _AOS_DIR.replace("\\", "/")
 
 _WS_DESC = (

@@ -11,9 +11,11 @@ import subprocess
 
 logger = logging.getLogger("agent_os")
 
-# 模型列表缓存文件
+# 模型列表缓存文件。cli_resolver.py 位于 .agent_os/src/agent/，
+# 需要 dirname × 3 到 .agent_os（× 2 会落在 .agent_os/src，缓存永远读不到）。
 MODELS_CACHE_FILE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "state", "models.json"
+    os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))), "state", "models.json"
 )
 
 # ============================================================================

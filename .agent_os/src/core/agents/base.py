@@ -358,8 +358,9 @@ class Agent(BaseModel):
         parent_workspace = self.workspace_path
         if not parent_workspace:
             import os as _os
+            # 与 build_agent_env 的 workspace 规则一致：project_root/workspaces/<id>
             parent_workspace = _os.path.join(
-                _os.path.dirname(_os.path.abspath(__file__)), "workspaces", self.agent_id)
+                self._project_root, "workspaces", self.agent_id)
 
         child_ids = []
         spawned_step_ids = []
@@ -625,25 +626,35 @@ class Agent(BaseModel):
 
     MAX_GOAL_RETRIES: ClassVar[int] = 5
 
+    def _has_active_child(self, cls) -> bool:
+        """是否存在活跃（running/waiting）的指定类型子 agent。
+
+        已完成的旧 supervisor/goal 不视为活跃——supervisor 给出 CORRECTION
+        后父 agent 修正重跑再次完成时，应重新创建审查 agent 评估新产出。
+        """
+        return any(isinstance(c, cls) and c.status in (RunStatus.RUNNING, RunStatus.WAITING)
+                   for c in self.children)
+
     def on_completed(self) -> None:
         """完成时检查：有 goal/supervisor 就先评估，没有则通知父 agent。"""
         from .goal import GoalAgent
         from .supervisor import SupervisorAgent
 
-        # 首次完成时创建 goal agent（之前 set_goal 时上下文为空无法创建）
-        if self.goal and not any(isinstance(c, GoalAgent) for c in self.children):
+        # 创建 goal / supervisor agent：仅当没有活跃的同类子 agent 时才创建。
+        # （旧版判断 not any(isinstance(c, ...)) 会把已完成的旧 supervisor 也算在内，
+        #  导致第二次完成时不再重新审查——CORRECTION 修正后无法再次进入监督者。）
+        if self.goal and not self._has_active_child(GoalAgent):
             self._spawn_goal_agent()
-        # 首次完成时创建 supervisor agent
-        if self.supervisor and not any(isinstance(c, SupervisorAgent) for c in self.children):
+        if self.supervisor and not self._has_active_child(SupervisorAgent):
             self._spawn_supervisor_agent()
 
         for child in self.children:
-            if isinstance(child, GoalAgent):
+            if isinstance(child, GoalAgent) and child.status == RunStatus.RUNNING:
                 child._start_new_session()
                 child.resume("请评估。", source="os")
                 return
         for child in self.children:
-            if isinstance(child, SupervisorAgent):
+            if isinstance(child, SupervisorAgent) and child.status == RunStatus.RUNNING:
                 child.resume("请继续审查。", source="os")
                 return
         if self.parent:
