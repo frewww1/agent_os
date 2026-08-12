@@ -125,6 +125,10 @@ def main():
         sys.exit(1)
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+    # 把实际监听端口写入进程环境变量，供 report.py/send.py 等脚本使用。
+    # _launch（运行时 spawn 的 supervisor/goal 子 agent）不经过 build_agent_env，
+    # 只能从 os.environ 继承端口——否则多开时 report 会默认 POST 到 8420（错实例）。
+    os.environ["AGENT_OS_PORT"] = str(port)
     agent_os = AgentOS(project_root=project_root, cli_command=args.cli, port=port,
                         default_model=args.model, loop=loop,
                         backend_type=backend_type)
