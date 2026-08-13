@@ -1397,6 +1397,51 @@ details[open] > summary.tool-head { border-bottom: 1px solid var(--line); }
 .msg-report .msg-role::before { content: '✓'; font-weight: 800; font-size: 12px; }
 .msg-report .msg-body { font-size: 14px; color: var(--text); font-weight: 400; }
 
+/* ========== 事件类型徽标（SEND / REPORT / RESUME / SUPERVISOR） ========== */
+.msg-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 4px;
+    flex-wrap: wrap;
+}
+.msg-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 8px;
+    border-radius: 99px;
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    line-height: 1.7;
+    white-space: nowrap;
+}
+.msg-badge-send { background: rgba(56,189,248,0.16); color: var(--send); border: 1px solid rgba(56,189,248,0.35); }
+.msg-badge-report { background: rgba(52,211,153,0.16); color: var(--report); border: 1px solid rgba(52,211,153,0.35); }
+.msg-badge-resume { background: rgba(192,132,252,0.16); color: var(--accent); border: 1px solid rgba(192,132,252,0.4); }
+.msg-badge-supervisor { background: rgba(251,191,36,0.14); color: #fbbf24; border: 1px solid rgba(251,191,36,0.35); }
+.msg-role-sub {
+    color: var(--text-3);
+    font-size: 10.5px;
+    letter-spacing: 0.3px;
+}
+.msg-time {
+    margin-left: auto;
+    color: var(--text-4);
+    font-size: 10.5px;
+    font-family: monospace;
+    opacity: 0.8;
+}
+.msg-send .msg-head { margin-bottom: 2px; }
+.msg-report .msg-head { margin-bottom: 4px; }
+.msg-os-resume .msg-head { margin-bottom: 4px; }
+.msg-os-resume .msg-role {
+    color: var(--accent);
+    font-size: 10.5px;
+    margin-bottom: 0;
+}
+
 /* User Done — child terminated by user click; just a signal, no content */
 .msg-user-done {
     align-self: center;

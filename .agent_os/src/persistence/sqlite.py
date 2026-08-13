@@ -113,7 +113,21 @@ def _parse_jsonl_events(os_, agent) -> list[dict]:
                     events.append(ev)
     except Exception as e:
         logger.warning(f"parse jsonl failed for {agent.agent_id[:8]}: {e}")
-    return events
+    # 按 tool_use id 去重：CLI（--include-partial-messages）写 jsonl 时同一
+    # function_call 会以同 id 的两条记录出现（部分版 + 完整版），保留最后一条。
+    deduped = []
+    seen_use_ids: set[str] = set()
+    for ev in events:
+        uid = ev.get("tool_use_id")
+        if not uid:
+            deduped.append(ev)
+            continue
+        if uid in seen_use_ids:
+            # 移除之前同 id 的记录，保留当前（后出现的完整版）
+            deduped = [e for e in deduped if e.get("tool_use_id") != uid]
+        seen_use_ids.add(uid)
+        deduped.append(ev)
+    return deduped
 
 
 def load_full_events(os_, agent) -> list[dict]:
@@ -232,8 +246,18 @@ def load_agents_from_disk(os_) -> None:
                 # 重启后等待用户继续对话 / 点 Done
 
             from ..core.agents import Agent
-            agent = Agent(
-                backend=os_._backend, project_root=os_.project_root,
+            # 必须用 for_run 按 task_type/parent 选择具体类（SupervisorAgent/
+            # TaskAgent/RootAgent/InteractiveAgent 等）。直接 Agent(**kwargs)
+            # 会把所有加载的 agent 退化成 base Agent——isinstance(child,
+            # SupervisorAgent) 恒为 False，supervisor 的 verdict 处理
+            # （CORRECTION/PASS 驱动父 agent 修正/完成）永远不会触发。
+            # project_root：优先用 agent 自己持久化的工作根目录（resume 时 CLI
+            # 需要以它为准定位会话 jsonl）；老数据无该字段时回退到实例当前 root。
+            _agent_root = r.get("project_root") or os_.project_root
+            _agent_root = _agent_root if (not isinstance(_agent_root, str)
+                                          or os.path.isdir(_agent_root)) else os_.project_root
+            agent = Agent.for_run(
+                backend=os_._backend, project_root=_agent_root,
                 agent_id=aid,
                 prompt=r.get("prompt", ""),
                 status=RunStatus(status_str),
@@ -254,6 +278,15 @@ def load_agents_from_disk(os_) -> None:
                 system_prompt=r.get("system_prompt"),
                 goal=r.get("goal"),
                 goal_retries=r.get("goal_retries", 0),
+                # supervisor 必须从 DB 恢复：否则重启后父 agent 的 supervisor
+                # 变 None，on_completed 不再 spawn 审查 agent（CORRECTION 修正
+                # 后无法再次进入监督者，任务直接结束）。
+                supervisor=r.get("supervisor"),
+                # supervisor 无结果重试计数也需恢复：否则重启后归零，
+                # "supervisor 反复失败 → 父 agent 无限 resume" 的循环防护被绕过。
+                supervisor_retries=r.get("supervisor_retries", 0),
+                oom_retries=r.get("oom_retries", 0),
+                summarized_children=r.get("summarized_children", []),
                 plan_content=r.get("plan_content"),
                 plan_file=r.get("plan_file"),
             )

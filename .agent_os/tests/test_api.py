@@ -130,6 +130,7 @@ class TestGetAgent:
         agent.reported_result = "done"
         agent.goal = None
         agent.goal_retries = 0
+        agent.supervisor_retries = 0
         agent.max_goal_retries = None
         agent.exit_code = None
         agent.interactive = False
@@ -142,6 +143,8 @@ class TestGetAgent:
         agent.label = None
         agent.plan_content = None
         agent.plan_file = None
+        agent.supervisor = None
+        agent.oom_retries = 0
         mock_pm.get_agent.return_value = agent
         resp = client.get("/api/agent/a1")
         assert resp.status_code == 200

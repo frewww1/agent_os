@@ -100,8 +100,15 @@ def _parse_session_obj(obj: dict) -> list[dict]:
     elif typ == "function_call":
         name = obj.get("name", "")
         inp = _parse_args(obj.get("arguments", ""))
-        events.append({"kind": "tool_use", "tool": name,
-                       "summary": _tool_summary(name, inp)})
+        ev = {"kind": "tool_use", "tool": name,
+              "summary": _tool_summary(name, inp)}
+        # 携带原始 tool_use id：CLI（--include-partial-messages）写入 jsonl 时
+        # 同一 function_call 可能以"部分 + 完整"两条同 id 记录出现，解析层需
+        # 按 id 去重，避免 UI 把同一次工具调用显示成两次。
+        cid = obj.get("id") or obj.get("providerData", {}).get("messageId") or ""
+        if cid:
+            ev["tool_use_id"] = cid
+        events.append(ev)
     
     elif typ == "function_call_result":
         output = obj.get("output", "")

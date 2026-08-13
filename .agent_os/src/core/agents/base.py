@@ -49,6 +49,40 @@ logger = logging.getLogger("agent_os")
 # 自动 --resume 同一会话继续任务。此为该恢复的最大次数。
 MAX_OOM_RETRIES = 3
 
+# ---------------------------------------------------------------------------
+# stdout fd 所有权注册表
+#
+# Windows 下 subprocess.Popen 的 stdout 管道 fd 号会被复用：一个进程退出、
+# 其 fd 释放后，新的 Popen 可能拿到同一个 fd 号。exitwatch 线程若在进程
+# 退出后按 fd 号 os.close(fd)，会误关掉已被其他（新）进程占用的管道，
+# 导致该进程的 reader 立即 EBADF、被误判为退出（exit=-1），进而引发
+# "supervisor 反复失败 → 父 agent 无限 resume" 的假循环。
+#
+# 因此所有 Popen 创建时把 (fd -> id(session)) 登记到全局表，exitwatch 关闭
+# 前校验该 fd 的所有者仍是自己，否则跳过关闭。
+# ---------------------------------------------------------------------------
+_STDOUT_FD_OWNERS: dict[int, int] = {}
+_STDOUT_FD_LOCK = threading.Lock()
+
+
+def _register_stdout_fd(session) -> None:
+    try:
+        fd = session.stdout.fileno()
+        with _STDOUT_FD_LOCK:
+            _STDOUT_FD_OWNERS[fd] = id(session)
+    except Exception:
+        pass
+
+
+def _unregister_stdout_fd(session) -> None:
+    try:
+        fd = session.stdout.fileno()
+        with _STDOUT_FD_LOCK:
+            if _STDOUT_FD_OWNERS.get(fd) == id(session):
+                _STDOUT_FD_OWNERS.pop(fd, None)
+    except Exception:
+        pass
+
 
 def find_latest_plan_file() -> str | None:
     """返回 ~/.codebuddy/plans/ 下最近修改的 .md 文件路径。"""
@@ -89,6 +123,7 @@ class Agent(BaseModel):
     system_prompt: Optional[str] = None
     goal: Optional[str] = None
     goal_retries: int = 0
+    supervisor_retries: int = 0
     oom_retries: int = 0
     supervisor: Optional[str] = None
     # 已向父 agent 汇总过结果的子 agent id（增量 resume：每次只告知新完成的）
@@ -171,11 +206,15 @@ class Agent(BaseModel):
             "label": self.label, "step_id": self.step_id,
             "system_prompt": self.system_prompt, "goal": self.goal,
             "goal_retries": self.goal_retries,
+            "supervisor_retries": self.supervisor_retries,
             "oom_retries": self.oom_retries,
             "summarized_children": self.summarized_children,
             "max_goal_retries": self.max_goal_retries, "depth": self.depth,
             "plan_content": self.plan_content, "plan_file": self.plan_file,
             "supervisor": self.supervisor,
+            # 持久化 agent 自己的工作根目录：resume 时 CLI 需要以正确 cwd 定位
+            # 会话 jsonl。仅用当前 os_.project_root 会在 switch_root 后错位。
+            "project_root": self._project_root,
             "os_events": os_events,
         }
 
@@ -411,7 +450,11 @@ class Agent(BaseModel):
                     c.resume("请继续审查。", source="os")
                     return
         elif isinstance(child, SupervisorAgent):
-            self._handle_supervisor_verdict(child_result)
+            if self._handle_supervisor_verdict(child_result):
+                # CORRECTION 已 resume 父 agent 修正——必须 return，
+                # 否则继续走下面"所有子完成"的 _resume_from_children 会
+                # 再次 resume，两个 CLI 进程竞争同一会话导致假 running。
+                return
 
         done = sum(1 for c in self.children if c.status in (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.STOPPED))
         if done < len(self.children):
@@ -445,35 +488,70 @@ class Agent(BaseModel):
         tag = "achieved" if is_met else "retries exhausted"
         self.add_event("system", text=f"[Agent OS] Goal {tag}")
 
-    def _handle_supervisor_verdict(self, result: str | None) -> None:
+    def _handle_supervisor_verdict(self, result: str | None) -> bool:
+        """处理 supervisor verdict。返回 True 表示已处理终态（调用方应停止后续 resume）。
+
+        - CORRECTION → resume 父 agent 修正，返回 True
+        - PASS → 根 agent 任务通过审查即结束，返回 True 阻止 _resume_from_children
+          误把已完成的根 agent 重新拉起；有父 agent 时返回 False 走正常"通知父"流程。
+        - 无结果（supervisor 启动失败/崩溃）→ 计数重试；超限则视为审查无法进行，
+          放弃监督并返回 True 终止循环（否则父 agent 会无限 resume 复活）。
+        """
         if not result:
-            return
+            self.supervisor_retries += 1
+            max_retries = self.MAX_SUPERVISOR_RETRIES
+            if self.supervisor_retries < max_retries:
+                self.add_event("system", text=(
+                    f"[Agent OS] Supervisor produced no verdict "
+                    f"({self.supervisor_retries}/{max_retries}), retrying..."))
+                return False
+            self.add_event("error", text=(
+                f"[Agent OS] Supervisor failed {self.supervisor_retries} times without a verdict, "
+                f"skipping supervision to stop the loop"))
+            self.supervisor = None
+            self.supervisor_retries = 0
+            return True
+        self.supervisor_retries = 0
         result_upper = result.strip().upper()
         if result_upper.startswith("PASS"):
             self.add_event("system", text="[Agent OS] Supervisor: PASS")
             self.supervisor = None
+            if self.parent is None:
+                # 根 agent：supervisor PASS 即整个任务验收通过，不应 resume 自己。
+                # 否则 notify_child_completed 会走 _resume_from_children 把已
+                # completed 的根 agent 重新拉起（两个 CLI 竞争同一会话 → 假 running）。
+                return True
         elif result_upper.startswith("CORRECTION"):
             self.add_event("system", text=f"[Agent OS] Supervisor correction: {result[:200]}")
             self.resume(result.strip(), source="os")
+            return True
+        return False
 
     def _resume_from_children(self) -> None:
+        summary = self._build_child_results_summary()
+        if not summary:
+            # 所有子 agent 都已汇总过（summarized_children 已记录）：
+            # 没有新内容可告知父 agent，任务到此结束，不 resume。
+            logger.info(f"[{self.agent_id[:8]}] no new children to summarize, done")
+            return
         if self._session and self._session.poll() is None:
             self._terminate_process()
         if not self.session_id:
             self.add_event("error", text="[Agent OS] Cannot resume - no session_id")
             self._transition(RunStatus.FAILED)
             return
-        summary = self._build_child_results_summary()
         self._transition(RunStatus.RUNNING)
         self.resume(summary, source="os")
 
     def _build_child_results_summary(self) -> str:
         # 增量汇总：只包含本次新完成的子 agent（已汇报过的跳过），
         # 避免 resume 时把历史所有子 agent 的结果全部重复告知父 agent。
+        # 带过后记录到 summarized_children（持久化），下次 resume 不再重复告知。
         new_children = [c for c in self.children
                         if c.agent_id not in self.summarized_children]
         if not new_children:
-            new_children = self.children
+            # 所有子 agent 都已汇总过：没有新内容可告知，调用方应直接结束。
+            return ""
         parts = ["子 agent 执行完毕，结果如下：", ""]
         for i, child in enumerate(new_children, 1):
             parts.append(f"子任务 {i}：{child.prompt[:100]}")
@@ -625,6 +703,9 @@ class Agent(BaseModel):
     # ----------------------------------------------------------------
 
     MAX_GOAL_RETRIES: ClassVar[int] = 5
+    # supervisor 无结果（启动失败/进程崩溃）时允许的重试次数，超限终止
+    # 循环，防止"supervisor 反复失败 → 父 agent 无限 resume"。
+    MAX_SUPERVISOR_RETRIES: ClassVar[int] = 3
 
     def _has_active_child(self, cls) -> bool:
         """是否存在活跃（running/waiting）的指定类型子 agent。
@@ -646,7 +727,15 @@ class Agent(BaseModel):
         if self.goal and not self._has_active_child(GoalAgent):
             self._spawn_goal_agent()
         if self.supervisor and not self._has_active_child(SupervisorAgent):
-            self._spawn_supervisor_agent()
+            # 复用已有的 supervisor child（CORRECTION 修正后再次完成时不重新
+            # spawn 新监督者，而是让同一个监督者带着新产出继续审查），避免一个
+            # 父任务产生多个 supervisor children。
+            existing_sup = next((c for c in self.children
+                                 if isinstance(c, SupervisorAgent)), None)
+            if existing_sup is not None:
+                self._recycle_supervisor(existing_sup)
+            else:
+                self._spawn_supervisor_agent()
 
         for child in self.children:
             if isinstance(child, GoalAgent) and child.status == RunStatus.RUNNING:
@@ -715,7 +804,11 @@ class Agent(BaseModel):
         context = self.build_work_context()
         if not context.strip():
             return
-        task_desc = self.goal or self.prompt[:200]
+        # 审查任务描述：优先用用户设置的监督内容（self.supervisor，这是明确的
+        # 验收标准），其次用 goal（可验证完成条件），最后才是任务 prompt。
+        # 之前用 self.goal or self.prompt 会把父任务 prompt 当成审查任务，
+        # 导致 supervisor 审查的内容与用户设置的监督标准不一致。
+        task_desc = (self.supervisor or self.goal or self.prompt)[:500]
         sup_prompt = (
             f"## 审查任务\n{task_desc}\n\n## Agent 产出\n{context[:8000]}\n\n"
             f"全部满足 → report.py PASS\n有问题 → send.py CORRECTION"
@@ -726,6 +819,32 @@ class Agent(BaseModel):
         )
         child = self._make_child(sup_prompt, sup_sys, "supervisor", agent_cls=SupervisorAgent)
         child.initialize(sup_prompt, self.model)
+
+    def _recycle_supervisor(self, supervisor: "Agent") -> None:
+        """复用已有的 supervisor child：把父 agent 的最新产出直接回复其现有会话。
+
+        CORRECTION 修正后父 agent 再次完成时，不重新 spawn 新监督者，也不重建
+        会话——直接 resume 监督者现有会话，把新产出作为一条新消息发进去继续审查。
+        这样监督者保留自己的审查上下文（它知道自己给过什么 CORRECTION，能看到
+        修正前后对比），且一个父任务始终只有同一个监督者。
+        """
+        context = self.build_work_context()
+        if not context.strip():
+            return
+        # 复位退出标志：supervisor 上次会话已完成（_exit_fired=True），
+        # 不复位则新会话退出时 _on_exit 被幂等跳过 → 状态不更新 → 卡 running。
+        # 其余状态（session_id、prompt、system_prompt）保持原样——直接 resume
+        # 现有会话即可，新产出作为消息送达监督者。
+        supervisor._exit_fired = False
+        supervisor.reported_result = None
+        supervisor.fallback_result = None
+        # 直接 resume 现有会话：--resume 恢复 jsonl 会话并把新产出作为用户消息
+        # 追加，监督者在同一上下文中继续审查。
+        supervisor.resume(
+            f"父 agent 已按你的审查意见修正完成，请审查最新产出：\n{context[:8000]}",
+            source="os",
+        )
+        logger.info(f"[{self.agent_id[:8]}] Supervisor reused: {supervisor.agent_id[:8]}")
 
     # ----------------------------------------------------------------
     #  plan / DAG 管理
@@ -802,8 +921,13 @@ class Agent(BaseModel):
             self._transition(RunStatus.RUNNING)
             self.completed_at = None
             self.exit_code = None
+            # 复位退出标志：上一轮 CLI 已完成（_exit_fired=True）时，若不复位，
+            # 新 CLI 退出后 _on_exit 被幂等跳过 → 状态不更新 → agent 永久卡 running。
+            self._exit_fired = False
 
         self._session = handle
+        # 登记 stdout fd 所有权：exitwatch 关闭 fd 时校验，防 Windows fd 复用误关。
+        _register_stdout_fd(handle)
         self._start_reader_thread()
         self._dirty = True
         return True
@@ -823,6 +947,16 @@ class Agent(BaseModel):
         if session is None:
             return
         logger.info(f"[{self.agent_id[:8]}] Reader started, pid={session.pid}")
+        # Windows 下 CLI 派生的子进程可能继承 stdout 句柄：主进程退出后
+        # readline 永不返回 EOF → reader 卡死 → agent 永远 running →
+        # on_completed 永不触发 → supervisor 永远不会被 spawn。
+        # 启动看护线程：进程退出后强制关闭 stdout 管道，让 reader 走完收尾。
+        self._start_stdout_exit_watcher(session)
+        try:
+            _fd = session.stdout.fileno()
+            logger.info(f"[{self.agent_id[:8]}] Reader stdout fd={_fd}")
+        except Exception as _e:
+            logger.warning(f"[{self.agent_id[:8]}] Reader stdout fileno failed: {_e}")
         try:
             for ev in self._backend.stream(session):
                 self._on_event(ev)
@@ -833,6 +967,8 @@ class Agent(BaseModel):
             # - 进程被替换（resume/切换）导致旧 reader 终止（状态由新进程管理）
             # - 用户停止（状态已由 stop 流程处理）
             # - 当前进程自然退出（interactive 每轮结束等用户输入）→ 仍需走 _on_exit
+            # - CLI 快速退出（如 resume 失败立即退出）导致 readline 抛 EBADF：
+            #   进程已死，属预期退出，不应记录 [ERROR] EBADF 误导用户
             if self._is_reader_exit_expected(session):
                 current = self._session is session and not self.user_terminated
                 if current:
@@ -841,7 +977,7 @@ class Agent(BaseModel):
                     try:
                         rc = session.poll()
                     except Exception:
-                        rc = -1
+                        rc = getattr(session, "returncode", None) or -1
                     if rc is None:
                         rc = -1
                     self._on_exit(rc)
@@ -849,8 +985,67 @@ class Agent(BaseModel):
                     logger.debug(f"[{self.agent_id[:8]}] reader stopped (expected): {e}")
                 return
             msg = str(e).strip()
+            # EBADF（Bad file descriptor）在 CLI 进程已退出时是 Windows 管道
+            # 关闭的正常副作用，不是 agent 错误——不记录 error 事件。
+            if "Errno 9" in msg or "Bad file descriptor" in msg:
+                logger.warning(f"[{self.agent_id[:8]}] reader EBADF, treating as exit: {msg}")
+                self._on_exit(getattr(session, "returncode", None) or -1)
+                return
             self._on_event({"kind": "error", "text": f"[ERROR] {msg}" if msg else "[ERROR] reader error"})
             self._on_exit(-1)
+        finally:
+            # 清理 fd 所有权登记：无论正常/异常退出，本 session 的 stdout
+            # 都不再被使用（进程已退出或已切换），防止注册表陈旧残留。
+            _unregister_stdout_fd(session)
+
+    def _start_stdout_exit_watcher(self, session) -> None:
+        """启动 stdout 看护线程：进程退出后强制关闭 stdout 管道。
+
+        Windows 下 CLI（node）会 spawn 子进程并继承 stdout 句柄。主进程退出后
+        readline 不会收到 EOF（管道仍被子进程持有），reader 线程永久卡死，
+        _on_exit 永不触发 → agent 永远 running → supervisor 永不 spawn。
+        看护线程在进程退出后关闭 stdout，使 readline 抛出异常/返回 EOF，
+        reader 走完退出流程（预期退出分支，不会产生误导性 error）。
+        """
+        def _watch():
+            try:
+                session.wait()
+            except Exception as e:
+                logger.warning(f"[{self.agent_id[:8]}] exitwatch wait failed: {e}")
+                return
+            # 进程已退出：等一瞬让剩余输出被消费，然后强制关闭管道。
+            import time as _time
+            _time.sleep(0.5)
+            if self._session is not session:
+                logger.info(f"[{self.agent_id[:8]}] exitwatch: session switched, skip")
+                return  # 已切换新进程，旧 reader 由新进程状态管理
+            try:
+                stream = getattr(session, "stdout", None)
+                if stream is not None:
+                    fd = stream.fileno()
+                    # Windows 下 fd 号会被复用：本进程退出后，新 Popen 可能拿到
+                    # 同一个 fd 号。直接 os.close(fd) 会误关新进程的管道，导致
+                    # 其 reader EBADF → 假 exit=-1 → supervisor 无限循环。
+                    # 关闭前校验注册表：该 fd 的所有者仍必须是当前 session。
+                    # 校验 + 关闭放在同一把锁内，避免"校验通过后、os.close 前"
+                    # 新进程注册同一 fd 的竞态（新进程注册会等待锁释放）。
+                    with _STDOUT_FD_LOCK:
+                        if _STDOUT_FD_OWNERS.get(fd) != id(session):
+                            logger.info(
+                                f"[{self.agent_id[:8]}] exitwatch: fd={fd} reowned, skip close"
+                            )
+                            return
+                        _STDOUT_FD_OWNERS.pop(fd, None)
+                        # 不能 close() TextIOWrapper —— 它要先 flush，而 reader 线程
+                        # 正阻塞在 readline() 持有 buffer 锁 → flush 永远等不到锁 →
+                        # close 永不返回，句柄不被关闭，readline 继续阻塞。
+                        # 直接关底层 fileno，绕过 Python 层锁，让 readline 抛 EBADF。
+                        logger.info(f"[{self.agent_id[:8]}] exitwatch: closing stdout fd={fd}")
+                        _os.close(fd)
+            except Exception as e:
+                logger.warning(f"[{self.agent_id[:8]}] exitwatch close failed: {e}")
+
+        threading.Thread(target=_watch, daemon=True, name=f"exitwatch-{self.agent_id[:6]}").start()
 
     def _is_reader_exit_expected(self, session) -> bool:
         """reader 线程异常是否属于预期终止（不应产生 error 事件）。"""
@@ -858,10 +1053,16 @@ class Agent(BaseModel):
             return True
         if self._session is not session:
             return True  # 已切换到新进程，旧 reader 终止是预期的
+        rc = None
         try:
             rc = session.poll()
         except Exception:
-            rc = None
+            # Windows 上 CLI 快速退出 + 句柄释放竞态时 poll() 可能抛 OSError，
+            # 但 returncode 已填充，应视为进程已退出。
+            try:
+                rc = getattr(session, "returncode", None)
+            except Exception:
+                rc = None
         return rc is not None  # 进程已退出（自然退出或被终止）
 
     def _on_event(self, ev: dict) -> None:

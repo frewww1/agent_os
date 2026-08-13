@@ -483,7 +483,26 @@ function updateStageClock() {
 updateStageClock();
 setInterval(updateStageClock, 1000);
 
+function resetQualityPanel() {
+    // 清空 Execution Control 面板：防止上一个任务的 goal/supervisor 残留
+    // 串到新任务（startNew 会读取这两个输入框；不清空会导致新任务带错监督内容）。
+    const goalCheck = document.getElementById('goalCheck');
+    const supervisorCheck = document.getElementById('supervisorCheck');
+    const goal = document.getElementById('goalInput');
+    const supervisor = document.getElementById('supervisorInput');
+    const goalRow = document.getElementById('goalRow');
+    const supervisorRow = document.getElementById('supervisorRow');
+    if (goalCheck) goalCheck.checked = false;
+    if (supervisorCheck) supervisorCheck.checked = false;
+    if (goal) goal.value = '';
+    if (supervisor) supervisor.value = '';
+    if (goalRow) goalRow.style.display = 'none';
+    if (supervisorRow) supervisorRow.style.display = 'none';
+    updateQualitySummary();
+}
+
 function newChat() {
+    resetQualityPanel();
     currentAgentId = null;
     renderedSeq = 0;
     unreadEvents = 0;
@@ -900,6 +919,9 @@ async function startNew(prompt) {
     });
     const data = await resp.json();
     if (data.error) { alert(data.error); return; }
+    // 任务创建成功后清空 Execution Control 面板：本次的 goal/supervisor 已
+    // 随任务提交，残留值不应继续作用于后续新任务（避免监督内容串台）。
+    resetQualityPanel();
     currentAgentId = data.agent_id;
     renderedSeq = 0;
     document.getElementById('convStream').innerHTML = '';
@@ -1280,7 +1302,11 @@ function renderPrompt(ev) {
     // OS 调度注入的 prompt（Turn 2+ 子 agent 完成后注入父 agent）→ 单独的卡片
     if (ev.source === 'os') {
         const card = el('div', 'msg msg-os-resume');
-        const head = el('div', 'msg-role', 'orchestrator → resume');
+        const head = el('div', 'msg-head');
+        head.appendChild(el('span', 'msg-badge msg-badge-resume', 'RESUME'));
+        head.appendChild(el('span', 'msg-role', 'orchestrator → agent'));
+        head.appendChild(el('span', 'msg-role-sub', '子任务完成后被重新唤起'));
+        if (ev.ts) head.appendChild(el('span', 'msg-time', (ev.ts || '').slice(11, 19)));
         card.appendChild(head);
         const body = el('div', 'msg-body');
         body.textContent = ev.text || '';
@@ -1652,7 +1678,11 @@ function renderToolResult(ev) {
 
 function renderSend(ev) {
     const card = el('div', 'msg msg-send');
-    card.appendChild(el('div', 'msg-role', 'progress'));
+    const head = el('div', 'msg-head');
+    head.appendChild(el('span', 'msg-badge msg-badge-send', 'SEND'));
+    head.appendChild(el('span', 'msg-role-sub', '结果上报给父 agent'));
+    if (ev.ts) head.appendChild(el('span', 'msg-time', (ev.ts || '').slice(11, 19)));
+    card.appendChild(head);
     const body = el('div', 'msg-body');
     body.textContent = ev.text || '';
     card.appendChild(body);
@@ -1661,7 +1691,11 @@ function renderSend(ev) {
 
 function renderReport(ev) {
     const card = el('div', 'msg msg-report');
-    card.appendChild(el('div', 'msg-role', 'final result'));
+    const head = el('div', 'msg-head');
+    head.appendChild(el('span', 'msg-badge msg-badge-report', 'REPORT'));
+    head.appendChild(el('span', 'msg-role-sub', '提交最终结果'));
+    if (ev.ts) head.appendChild(el('span', 'msg-time', (ev.ts || '').slice(11, 19)));
+    card.appendChild(head);
     const body = el('div', 'msg-body markdown-body');
     setMarkdownBody(body, ev.text || '');
     card.appendChild(body);
@@ -1708,10 +1742,12 @@ function renderSystem(ev) {
 function renderSupervisorMsg(ev) {
     const text = ev.text || '';
     const card = el('div', 'msg msg-supervisor');
-    // 角色标签
-    const role = el('div', 'msg-role');
-    role.innerHTML = '&#x1F441; Supervisor';
-    card.appendChild(role);
+    // 头部：徽标 + 角色 + 时间
+    const head = el('div', 'msg-head');
+    head.appendChild(el('span', 'msg-badge msg-badge-supervisor', 'SUPERVISOR'));
+    head.appendChild(el('span', 'msg-role', '监督者'));
+    if (ev.ts) head.appendChild(el('span', 'msg-time', (ev.ts || '').slice(11, 19)));
+    card.appendChild(head);
     // 内容
     const body = el('div', 'msg-body');
     // 提取类型和内容
@@ -1724,6 +1760,10 @@ function renderSupervisorMsg(ev) {
             + '<div class="sup-detail">' + escapeHtml(msg) + '</div>';
     } else if (text.includes('continue')) {
         body.innerHTML = '<span class="sup-cont">&#x23F3; 继续工作</span>';
+    } else if (text.includes('produced no verdict')) {
+        body.innerHTML = '<span class="sup-cont">&#x23F3; 监督者未提交结论，重试中</span>';
+    } else if (text.includes('Supervisor reused')) {
+        body.innerHTML = '<span class="sup-cont">&#x1F504; 复用同一监督者继续审查</span>';
     } else {
         body.textContent = text;
     }
