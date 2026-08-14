@@ -523,9 +523,34 @@ class Agent(BaseModel):
                 return True
         elif result_upper.startswith("CORRECTION"):
             self.add_event("system", text=f"[Agent OS] Supervisor correction: {result[:200]}")
-            self.resume(result.strip(), source="os")
+            self.resume(self._compose_correction_message(result), source="os")
+            return True
+        else:
+            # 监督者未按约定带 "CORRECTION" 前缀，但内容是对产出的实质反馈
+            # （指出问题/要求修正）——不能丢，视为 CORRECTION 驱动父 agent 修正，
+            # 否则反馈会被 _resume_from_children 的空汇总吞掉，任务静默结束。
+            self.add_event("system", text=f"[Agent OS] Supervisor correction: {result[:200]}")
+            self.resume(self._compose_correction_message(result), source="os")
             return True
         return False
+
+    def _compose_correction_message(self, result: str) -> str:
+        """组合监督者修正反馈给父 agent 的 resume 消息。
+
+        监督者的反馈可能很简短（如只有 FAIL 或指出问题但没说下一步），父 agent
+        收到后容易停在"确认失败/等待指令"而不继续产出。在反馈后追加明确的
+        "请继续完成任务"指令，引导父 agent 按反馈修正后继续工作。
+        """
+        guide = (getattr(prompts, "LANG", "zh") == "zh") and (
+            "请根据上述反馈修正你的产出，并继续完成任务，直到监督者确认通过。"
+        ) or (
+            "Please fix your output according to the feedback above and continue "
+            "the task until the supervisor approves."
+        )
+        stripped = result.strip()
+        if stripped:
+            return f"{stripped}\n\n{guide}"
+        return guide
 
     def _resume_from_children(self) -> None:
         summary = self._build_child_results_summary()
@@ -544,13 +569,23 @@ class Agent(BaseModel):
         self.resume(summary, source="os")
 
     def _build_child_results_summary(self) -> str:
+        from .goal import GoalAgent
+        from .supervisor import SupervisorAgent
         # 增量汇总：只包含本次新完成的子 agent（已汇报过的跳过），
         # 避免 resume 时把历史所有子 agent 的结果全部重复告知父 agent。
         # 带过后记录到 summarized_children（持久化），下次 resume 不再重复告知。
+        #
+        # **排除 supervisor / goal**：它们是审查/评估 agent，其结果已通过
+        # verdict 机制（CORRECTION/PASS/YES/NO）单独驱动父 agent——CORRECTION
+        # 时 _handle_supervisor_verdict 已用监督者反馈 resume 父 agent。若再被
+        # 当普通子任务汇总，会把自己的"## 审查任务"描述嵌套进 resume prompt，
+        # 让父 agent 误以为监督者是待执行的任务。
         new_children = [c for c in self.children
-                        if c.agent_id not in self.summarized_children]
+                        if c.agent_id not in self.summarized_children
+                        and not isinstance(c, (GoalAgent, SupervisorAgent))]
         if not new_children:
-            # 所有子 agent 都已汇总过：没有新内容可告知，调用方应直接结束。
+            # 只有 supervisor/goal 或无新子任务：没有可告知父 agent 的内容，
+            # 调用方应直接结束。
             return ""
         parts = ["子 agent 执行完毕，结果如下：", ""]
         for i, child in enumerate(new_children, 1):
@@ -773,12 +808,20 @@ class Agent(BaseModel):
         if not context.strip():
             return
         max_r = self.max_goal_retries or self.MAX_GOAL_RETRIES
-        prompt = (
-            f"Evaluate this task outcome. Reply ONLY with YES or NO on the first line, "
-            f"then a brief reason on the second line.\n\n"
-            f'Goal: {self.goal}\n\n{context[:12000]}\n\n'
-            f'Did the agent achieve the goal? (YES/NO)'
-        )
+        if getattr(prompts, "LANG", "zh") == "zh":
+            prompt = (
+                f"评估该任务结果。第一行只用 YES 或 NO 回复，"
+                f"第二行给出简要理由。\n\n"
+                f"目标：{self.goal}\n\n{context[:12000]}\n\n"
+                f"agent 是否达成目标？(YES/NO)"
+            )
+        else:
+            prompt = (
+                f"Evaluate this task outcome. Reply ONLY with YES or NO on the first line, "
+                f"then a brief reason on the second line.\n\n"
+                f'Goal: {self.goal}\n\n{context[:12000]}\n\n'
+                f'Did the agent achieve the goal? (YES/NO)'
+            )
         sys_prompt = prompts.compose("goal", self.workspace_path)
         child = self._make_child(prompt, sys_prompt, "goal", agent_cls=GoalAgent)
         child.initialize(prompt, self.model)
@@ -809,13 +852,20 @@ class Agent(BaseModel):
         # 之前用 self.goal or self.prompt 会把父任务 prompt 当成审查任务，
         # 导致 supervisor 审查的内容与用户设置的监督标准不一致。
         task_desc = (self.supervisor or self.goal or self.prompt)[:500]
-        sup_prompt = (
-            f"## 审查任务\n{task_desc}\n\n## Agent 产出\n{context[:8000]}\n\n"
-            f"全部满足 → report.py PASS\n有问题 → send.py CORRECTION"
-        )
+        if getattr(prompts, "LANG", "zh") == "zh":
+            sup_prompt = (
+                f"## 审查任务\n{task_desc}\n\n## Agent 产出\n{context[:8000]}\n\n"
+                f"全部满足 → report.py PASS\n有问题 → send.py CORRECTION"
+            )
+        else:
+            sup_prompt = (
+                f"## Review Task\n{task_desc}\n\n## Agent Output\n{context[:8000]}\n\n"
+                f"All satisfied → report.py PASS\nIssues found → send.py CORRECTION"
+            )
         sup_sys = prompts.compose(
             "supervisor", self.workspace_path,
-            extra=f"验证产出是否满足：\n{self.supervisor}",
+            extra=("验证产出是否满足：\n" if getattr(prompts, "LANG", "zh") == "zh"
+                   else "Verify the output satisfies:\n") + (self.supervisor or ""),
         )
         child = self._make_child(sup_prompt, sup_sys, "supervisor", agent_cls=SupervisorAgent)
         child.initialize(sup_prompt, self.model)
@@ -1123,21 +1173,42 @@ class Agent(BaseModel):
             parts.append(f"Final report: {self.reported_result}")
         elif self.fallback_result:
             parts.append(f"Final output: {self.fallback_result}")
+        # 整理事件给监督者时只保留 agent 的最终文本回复。
+        # **排除 tool_use / tool_result**：工具调用和结果是过程噪音，对审查
+        # 没有价值，反而撑爆上下文。
+        # **同一回复只发送一次**：CLI 流式输出会先发 text_delta 增量、再发一条
+        # 完整 text（内容相同）。累积的 delta 片段若与后续 text 重复，只保留
+        # 完整 text；无后续 text 时才用 delta 累积兜底。
         log_lines = []
         delta_buf = []
         for e in self.output_events:
             kind = e.get("kind", "")
             if kind == "text_delta":
                 delta_buf.append(e.get("text", ""))
-            elif kind in ("text", "tool_result", "report"):
-                if delta_buf:
-                    log_lines.append("".join(delta_buf))
-                    delta_buf = []
-                log_lines.append(e.get("text", ""))
+            elif kind == "text":
+                full = e.get("text", "")
+                delta_joined = "".join(delta_buf)
+                # 完整 text 已包含 delta 累积内容（或 delta 为空）→ 只记完整版，
+                # 避免同一回复重复发送
+                if not delta_buf or full.strip() == delta_joined.strip() \
+                        or full.strip().endswith(delta_joined.strip()):
+                    log_lines.append(full)
+                else:
+                    if delta_joined.strip():
+                        log_lines.append(delta_joined)
+                    log_lines.append(full)
+                delta_buf = []
         if delta_buf:
-            log_lines.append("".join(delta_buf))
-        if log_lines:
-            parts.append("Work log:\n" + "\n".join(log_lines))
+            joined = "".join(delta_buf)
+            if joined.strip():
+                log_lines.append(joined)
+        # 相邻重复行去重（流式边界可能产生相同内容的相邻片段）
+        deduped = []
+        for line in log_lines:
+            if not deduped or line.strip() != deduped[-1].strip():
+                deduped.append(line)
+        if deduped:
+            parts.append("Work log:\n" + "\n".join(deduped))
         if self.messages:
             msgs = "\n".join(m.get("msg", "") for m in self.messages[-15:])
             if msgs.strip():

@@ -106,8 +106,15 @@ def main():
                              "Can be overridden per-agent in Dashboard.")
     parser.add_argument("--root", default=None,
                         help="Working directory for the CLI process (default: current directory)")
+    parser.add_argument("--lang", default=None, choices=["zh", "en"],
+                        help="Prompt language for all agents: zh (default) or en")
     parser.add_argument("--no-browser", action="store_true", help="Don't auto-open browser")
     args = parser.parse_args()
+
+    # 提示词语言：--lang 优先，其次环境变量 AGENT_OS_LANG，默认 zh。
+    # 必须在 prompts 模块首次读取前设置（prompts.LANG 是模块级常量）。
+    if args.lang:
+        os.environ["AGENT_OS_LANG"] = args.lang
 
     # Initialize process manager
     # 默认 project_root 为 CLI 运行目录（cwd），实现"部署在一处、按运行目录工作"；
