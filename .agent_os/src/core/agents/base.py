@@ -126,6 +126,12 @@ class Agent(BaseModel):
     supervisor_retries: int = 0
     oom_retries: int = 0
     supervisor: Optional[str] = None
+    # 监督者审查轮次（复用同一监督者时递增）与历史反馈摘要。
+    # 用于让监督者看到"审查往返历史"，自行判断是否陷入重复修正。
+    supervisor_rounds: int = 0
+    # 连续 abort 计数：监督者 abort 不立即中断任务，而是换一个全新监督者
+    # 独立复核；连续 abort 达到 MAX_SUPERVISOR_ABORTS 才真正停止整个任务。
+    supervisor_aborts: int = 0
     # 已向父 agent 汇总过结果的子 agent id（增量 resume：每次只告知新完成的）
     summarized_children: list[str] = []
     output_events: deque = Field(default_factory=lambda: deque(maxlen=10000))
@@ -212,6 +218,8 @@ class Agent(BaseModel):
             "max_goal_retries": self.max_goal_retries, "depth": self.depth,
             "plan_content": self.plan_content, "plan_file": self.plan_file,
             "supervisor": self.supervisor,
+            "supervisor_rounds": self.supervisor_rounds,
+            "supervisor_aborts": self.supervisor_aborts,
             # 持久化 agent 自己的工作根目录：resume 时 CLI 需要以正确 cwd 定位
             # 会话 jsonl。仅用当前 os_.project_root 会在 switch_root 后错位。
             "project_root": self._project_root,
@@ -513,6 +521,27 @@ class Agent(BaseModel):
             return True
         self.supervisor_retries = 0
         result_upper = result.strip().upper()
+        if result_upper.startswith("ABORT"):
+            # 监督者 abort：不立即中断任务。软 abort —— 换一个全新的监督者独立
+            # 复核当前产出；只有连续 MAX_SUPERVISOR_ABORTS 个监督者都 abort，
+            # 才真正停止整个任务（避免单一监督者误判就杀掉整个流程）。
+            # 必须在这里处理：监督者作为 child 通过 notify_child_completed →
+            # _handle_supervisor_verdict 回调父 agent，不经过父 agent 的 on_send，
+            # 若落入下方 else 会被当作普通 CORRECTION 反复 resume → 死循环。
+            self.supervisor_aborts += 1
+            max_aborts = self.MAX_SUPERVISOR_ABORTS
+            if self.supervisor_aborts < max_aborts:
+                if getattr(prompts, "LANG", "zh") == "zh":
+                    msg = (f"[Agent OS] Supervisor abort ({self.supervisor_aborts}/{max_aborts}): "
+                           f"{result[:120]}。开启新的监督者独立复核当前产出。")
+                else:
+                    msg = (f"[Agent OS] Supervisor abort ({self.supervisor_aborts}/{max_aborts}): "
+                           f"{result[:120]}. Starting a fresh supervisor to re-review.")
+                self.add_event("system", text=msg)
+                self._replace_supervisor(result)
+                return True
+            self._abort_supervision(result)
+            return True
         if result_upper.startswith("PASS"):
             self.add_event("system", text="[Agent OS] Supervisor: PASS")
             self.supervisor = None
@@ -522,6 +551,8 @@ class Agent(BaseModel):
                 # completed 的根 agent 重新拉起（两个 CLI 竞争同一会话 → 假 running）。
                 return True
         elif result_upper.startswith("CORRECTION"):
+            # 监督者给出实质修正要求 → 父 agent 有实质进展，重置连续 abort 计数。
+            self.supervisor_aborts = 0
             self.add_event("system", text=f"[Agent OS] Supervisor correction: {result[:200]}")
             self.resume(self._compose_correction_message(result), source="os")
             return True
@@ -711,9 +742,52 @@ class Agent(BaseModel):
     def on_send(self, msg: str) -> bool:
         self.messages.append({"time": datetime.now().isoformat(), "msg": msg})
         self.add_event("send", text=msg)
+        # 监督者 ABORT 信号：检测到死循环时中断自己 + 父 agent，结束整个任务。
+        if msg and msg.strip().upper().startswith("ABORT"):
+            self._abort_supervision(msg)
+            return True
         if any(isinstance(c, SupervisorAgent) for c in self.children):
             self._handle_supervisor_verdict(msg)
         return True
+
+    def _abort_supervision(self, reason: str = "") -> None:
+        """监督者检测到重复死循环时调用：中断父 agent 与所有监督者。
+
+        - 终止父 agent 的 CLI 进程（若运行中）
+        - 终止所有 supervisor child 的 CLI 进程
+        - 父 agent 标记 stopped，记录 ABORT 事件，清理 supervisor 配置
+        """
+        from .supervisor import SupervisorAgent
+        reason_txt = reason.strip()[:200] or "detected repeated review loop"
+        # 1. 停止所有 supervisor child
+        for child in list(self.children):
+            if isinstance(child, SupervisorAgent):
+                try:
+                    child.stop()
+                except Exception:
+                    pass
+        # 2. 停止父 agent 自身
+        try:
+            if self._session and self._session.poll() is None:
+                self._terminate_process()
+        except Exception:
+            pass
+        self.supervisor = None
+        self.supervisor_retries = 0
+        self.supervisor_aborts = 0
+        self.add_event("system", text=(
+            f"[Agent OS] Supervisor ABORT: {reason_txt}. 监督者检测到重复死循环，"
+            f"已中断父 agent 与监督者，任务停止。"
+            if getattr(prompts, "LANG", "zh") == "zh" else
+            f"[Agent OS] Supervisor ABORT: {reason_txt}. Repeated loop detected, "
+            f"parent agent and supervisor stopped."
+        ))
+        try:
+            self._transition(RunStatus.STOPPED)
+        except Exception:
+            pass
+        self._dirty = True
+        logger.warning(f"[{self.agent_id[:8]}] Supervisor ABORT: {reason_txt}")
 
     def on_user_done(self) -> None:
         if self.status == RunStatus.COMPLETED:
@@ -741,6 +815,9 @@ class Agent(BaseModel):
     # supervisor 无结果（启动失败/进程崩溃）时允许的重试次数，超限终止
     # 循环，防止"supervisor 反复失败 → 父 agent 无限 resume"。
     MAX_SUPERVISOR_RETRIES: ClassVar[int] = 3
+    # 连续 abort 上限：监督者 abort 不中断任务，而是换新监督者独立复核；
+    # 连续 MAX_SUPERVISOR_ABORTS 个监督者都 abort 才真正停止整个任务。
+    MAX_SUPERVISOR_ABORTS: ClassVar[int] = 3
 
     def _has_active_child(self, cls) -> bool:
         """是否存在活跃（running/waiting）的指定类型子 agent。
@@ -841,8 +918,35 @@ class Agent(BaseModel):
         self.supervisor = supervisor_prompt
         return True
 
-    def _spawn_supervisor_agent(self) -> None:
-        """创建 supervisor 子 agent。"""
+    def skip_supervisor(self) -> bool:
+        """停止监督：清空 supervisor 配置并终止正在运行的监督者。
+
+        - 父 agent 不再 spawn/复用 SupervisorAgent
+        - 若当前有正在运行的 supervisor child，终止其进程并标记 stopped
+        """
+        from .supervisor import SupervisorAgent
+        self.supervisor = None
+        self.supervisor_retries = 0
+        self.supervisor_aborts = 0
+        stopped = False
+        for child in list(self.children):
+            if isinstance(child, SupervisorAgent) and child.status == RunStatus.RUNNING:
+                try:
+                    child.stop()
+                    stopped = True
+                except Exception:
+                    pass
+        self.add_event("system", text="[Agent OS] Supervisor stopped by user.")
+        logger.info(f"[{self.agent_id[:8]}] Supervisor skipped by user (running child stopped: {stopped})")
+        self._dirty = True
+        return True
+
+    def _spawn_supervisor_agent(self, abort_history: str = "") -> None:
+        """创建 supervisor 子 agent。
+
+        abort_history: 前序监督者的 abort 结论摘要（软 abort 换新监督者时传入），
+        让新监督者了解之前的审查往返，独立复核而不是重复踩坑。
+        """
         from .supervisor import SupervisorAgent
         context = self.build_work_context()
         if not context.strip():
@@ -862,6 +966,24 @@ class Agent(BaseModel):
                 f"## Review Task\n{task_desc}\n\n## Agent Output\n{context[:8000]}\n\n"
                 f"All satisfied → report.py PASS\nIssues found → send.py CORRECTION"
             )
+        # 软 abort 换新监督者：附加前序 abort 结论，让新监督者独立复核
+        # （它应验证结论是否成立，而非盲目跟随前序 abort）。
+        if abort_history:
+            if getattr(prompts, "LANG", "zh") == "zh":
+                note = (f"\n\n## 前序监督者中止结论（仅供参考，请独立复核）\n"
+                        f"这是第 {self.supervisor_aborts} 次监督者 abort。"
+                        f"前序监督者认为：\n{abort_history[:1500]}\n\n"
+                        f"请独立审查当前产出：若前序结论不成立（产出实际已满足要求），"
+                        f"请 report.py PASS；若确有问题请 send.py CORRECTION；"
+                        f"仅当确实存在不可修复的死循环时才 send.py --abort。")
+            else:
+                note = (f"\n\n## Previous supervisor abort conclusion (for reference; re-verify independently)\n"
+                        f"This is supervisor abort #{self.supervisor_aborts}. "
+                        f"The previous supervisor concluded:\n{abort_history[:1500]}\n\n"
+                        f"Independently review the current output: if the previous conclusion is wrong "
+                        f"(output actually meets requirements), report.py PASS; if issues exist, "
+                        f"send.py CORRECTION; only abort (send.py --abort) for a genuine unfixable dead loop.")
+            sup_prompt += note
         sup_sys = prompts.compose(
             "supervisor", self.workspace_path,
             extra=("验证产出是否满足：\n" if getattr(prompts, "LANG", "zh") == "zh"
@@ -869,6 +991,29 @@ class Agent(BaseModel):
         )
         child = self._make_child(sup_prompt, sup_sys, "supervisor", agent_cls=SupervisorAgent)
         child.initialize(sup_prompt, self.model)
+
+    def _replace_supervisor(self, abort_reason: str) -> None:
+        """软 abort：移除当前 supervisor child，spawn 一个全新的监督者独立复核。
+
+        当前 supervisor 已给出 abort 结论，它自己不会再改变判断；换一个全新
+        监督者（新 session、新上下文），附上前序 abort 理由供其独立验证。
+        """
+        from .supervisor import SupervisorAgent
+        removed = False
+        for child in list(self.children):
+            if isinstance(child, SupervisorAgent):
+                try:
+                    child.stop()
+                except Exception:
+                    pass
+                try:
+                    self.children.remove(child)
+                    removed = True
+                except ValueError:
+                    pass
+        logger.info(f"[{self.agent_id[:8]}] Supervisor replaced after abort "
+                    f"({self.supervisor_aborts}/{self.MAX_SUPERVISOR_ABORTS}), removed={removed}")
+        self._spawn_supervisor_agent(abort_history=abort_reason)
 
     def _recycle_supervisor(self, supervisor: "Agent") -> None:
         """复用已有的 supervisor child：把父 agent 的最新产出直接回复其现有会话。
@@ -888,13 +1033,39 @@ class Agent(BaseModel):
         supervisor._exit_fired = False
         supervisor.reported_result = None
         supervisor.fallback_result = None
-        # 直接 resume 现有会话：--resume 恢复 jsonl 会话并把新产出作为用户消息
-        # 追加，监督者在同一上下文中继续审查。
-        supervisor.resume(
-            f"父 agent 已按你的审查意见修正完成，请审查最新产出：\n{context[:8000]}",
-            source="os",
-        )
-        logger.info(f"[{self.agent_id[:8]}] Supervisor reused: {supervisor.agent_id[:8]}")
+        # 审查轮次 + 历史反馈摘要：让监督者看到"审查往返历史"。
+        # 第 1 轮之后的复用轮次，告知这是第几轮、此前给过哪些反馈，
+        # 使监督者能对比判断父 agent 是否在原地打转（重复死循环）。
+        self.supervisor_rounds += 1
+        history = self._build_supervisor_review_history()
+        round_note = (getattr(prompts, "LANG", "zh") == "zh" and (
+            f"这是第 {self.supervisor_rounds} 轮审查。父 agent 已按你的审查意见修正，"
+            f"请审查最新产出：\n{context[:8000]}"
+        ) or (
+            f"This is review round #{self.supervisor_rounds}. The parent agent has revised "
+            f"per your feedback. Review the latest output:\n{context[:8000]}"
+        ))
+        if history:
+            round_note += "\n\n" + history
+        supervisor.resume(round_note, source="os")
+        logger.info(f"[{self.agent_id[:8]}] Supervisor reused round {self.supervisor_rounds}: {supervisor.agent_id[:8]}")
+
+    def _build_supervisor_review_history(self) -> str:
+        """收集监督者历史反馈摘要（来自本 agent 的 system 事件）。"""
+        from .supervisor import SupervisorAgent
+        corr_events = []
+        for e in self.output_events:
+            if e.get("kind") == "system" and "[Agent OS] Supervisor correction" in (e.get("text") or ""):
+                corr_events.append(e.get("text", "")[:300])
+        if not corr_events:
+            return ""
+        if getattr(prompts, "LANG", "zh") == "zh":
+            lines = ["历史审查反馈（防止重复死循环，若父 agent 产出与之前相同请中断）：", ""]
+        else:
+            lines = ["Previous review feedback (to detect repeated loops — abort if the output is unchanged):", ""]
+        for i, t in enumerate(corr_events, 1):
+            lines.append(f"{i}. {t}")
+        return "\n".join(lines)
 
     # ----------------------------------------------------------------
     #  plan / DAG 管理

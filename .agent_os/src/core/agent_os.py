@@ -442,6 +442,10 @@ class AgentOS:
         agent = self._get_agent(agent_id)
         return agent.skip_goal() if agent else False
 
+    def skip_supervisor(self, agent_id):
+        agent = self._get_agent(agent_id)
+        return agent.skip_supervisor() if agent else False
+
     # ---- 管理 & DAG ----
 
     def delete_agent(self, agent_id: str, recursive: bool = True) -> int:

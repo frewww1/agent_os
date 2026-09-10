@@ -285,6 +285,8 @@ def load_agents_from_disk(os_) -> None:
                 # supervisor 无结果重试计数也需恢复：否则重启后归零，
                 # "supervisor 反复失败 → 父 agent 无限 resume" 的循环防护被绕过。
                 supervisor_retries=r.get("supervisor_retries", 0),
+                supervisor_rounds=r.get("supervisor_rounds", 0),
+                supervisor_aborts=r.get("supervisor_aborts", 0),
                 oom_retries=r.get("oom_retries", 0),
                 summarized_children=r.get("summarized_children", []),
                 plan_content=r.get("plan_content"),

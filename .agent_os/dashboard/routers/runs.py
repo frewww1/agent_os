@@ -247,6 +247,18 @@ async def skip_goal(agent_id: str):
     return JSONResponse({"error": "agent not found"}, status_code=404)
 
 
+@router.post("/agent/{agent_id}/skip-supervisor")
+async def skip_supervisor(agent_id: str):
+    """停止监督：清空 supervisor 配置，终止正在运行的监督者。"""
+    agent_os = get_agent_os()
+    if not agent_os:
+        return JSONResponse({"error": "not initialized"}, status_code=500)
+    ok = agent_os.skip_supervisor(agent_id)
+    if ok:
+        return JSONResponse({"ok": True})
+    return JSONResponse({"error": "agent not found"}, status_code=404)
+
+
 @router.post("/agent/{agent_id}/set-max-goal-retries")
 async def set_max_goal_retries(agent_id: str, req: Request):
     """动态调整单个 agent 的 goal 最大重试次数。"""

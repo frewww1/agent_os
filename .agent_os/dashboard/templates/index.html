@@ -1969,7 +1969,13 @@ async function updateSessionInfo() {
     if (data.turns > 1) parts.push(`${data.turns} turns`);
     if (data.children_ids && data.children_ids.length > 0) parts.push(`${data.children_ids.length} children`);
     info.textContent = parts.join(' · ');
-    meta.textContent = parts.join(' · ');
+    // 有 supervisor 时在 meta 区提供显眼的"跳过监督"按钮
+    if (data.supervisor) {
+        meta.innerHTML = parts.join(' · ') +
+            ` <button class="conv-skip-sup" title="停止监督（不再审查此 agent）" onclick="skipSupervisor('${data.agent_id}')">⏹ 跳过监督</button>`;
+    } else {
+        meta.textContent = parts.join(' · ');
+    }
     // Goal picker
     const check = document.getElementById('goalCheck');
     const input = document.getElementById('goalInput');
@@ -2263,6 +2269,10 @@ function renderTree(nodes, depth) {
         if (canStop) {
             html += `<button class="tree-btn-icon tree-btn-stop" title="Stop" onclick="event.stopPropagation();stopRun('${node.agent_id}')">■</button>`;
         }
+        // 停止监督：agent 配置了 supervisor（可能正在审查或待审查）时提供
+        if (node.supervisor) {
+            html += `<button class="tree-btn-icon tree-btn-skip-sup" title="停止监督（不再审查此 agent）" onclick="event.stopPropagation();skipSupervisor('${node.agent_id}')">⏹S</button>`;
+        }
         if (node.status === 'plan_pending') {
             html += `<button class="tree-btn-done" style="background:#22c55e" onclick="event.stopPropagation();viewAgent('${node.agent_id}')">Review Plan</button>`;
         }
@@ -2290,6 +2300,18 @@ function renderTree(nodes, depth) {
 
 async function stopRun(agentId) {
     await fetch(`/api/agent/${agentId}/stop`, {method: 'POST'});
+    refreshTree();
+}
+
+async function skipSupervisor(agentId) {
+    if (!confirm('停止该 agent 的监督？将不再审查其后续产出。')) return;
+    const resp = await fetch(`/api/agent/${agentId}/skip-supervisor`, {method: 'POST'});
+    const data = await resp.json();
+    if (data.ok) {
+        showToast('已停止监督', 'success');
+    } else {
+        showToast(data.error || '停止监督失败', 'error');
+    }
     refreshTree();
 }
 

@@ -18,6 +18,9 @@ import urllib.error
 def main():
     parser = argparse.ArgumentParser(description="Send message to OS (does not end task)")
     parser.add_argument("--msg", required=True, help="Message content")
+    parser.add_argument("--abort", action="store_true",
+                        help="Abort supervision: signal the OS that the review is in a "
+                             "repeated dead loop. Stops the parent agent and all supervisors.")
     parser.add_argument("--port", type=int, default=int(os.environ.get("AGENT_OS_PORT", "8420")))
     args = parser.parse_args()
 
@@ -25,7 +28,12 @@ def main():
     if not agent_id:
         print("[Agent OS] Warning: AGENT_OS_AGENT_ID not set", file=sys.stderr)
 
-    payload = {"agent_id": agent_id, "msg": args.msg}
+    # --abort 时 msg 加 ABORT 前缀，on_send 据此中断父 agent 与监督者
+    msg = args.msg
+    if args.abort:
+        msg = f"ABORT: {msg}"
+
+    payload = {"agent_id": agent_id, "msg": msg}
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         f"http://127.0.0.1:{args.port}/api/agent/{agent_id}/send",

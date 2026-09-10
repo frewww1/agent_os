@@ -122,7 +122,21 @@ def tools_block(task_type):
                 "submit CORRECTION via send.py while the implementation is still failing.\n",
             )
             + _t("- send.py：提交 CORRECTION 反馈 → ", "- send.py: submit CORRECTION feedback → ")
-            + f"`python {_AOS_STR}/send.py --msg \"<feedback>\"`"
+            + f"`python {_AOS_STR}/send.py --msg \"<feedback>\"`\n"
+            + _t(
+                "- send.py --abort：若确认当前产出存在不可修复的硬约束（如设计源与验收规则"
+                "不可调和），可 abort 本监督者——系统会开启另一个监督者独立复核当前产出；"
+                "仅当连续多个监督者都 abort 时才真正终止任务。因此 abort 必须是「证据确凿的"
+                "终局判断」，而不是简单的不满：\n"
+                f"  `python {_AOS_STR}/send.py --abort --msg \"<硬约束原因>\"`",
+                "- send.py --abort: if you confirm the current output has an unfixable hard "
+                "constraint (e.g. design source and acceptance rules are irreconcilable), you "
+                "may abort this supervisor — the OS will start another supervisor to "
+                "independently re-review the current output; the task is only truly terminated "
+                "after consecutive supervisors all abort. So abort must be an evidence-backed "
+                "terminal judgment, not simple dissatisfaction:\n"
+                f"  `python {_AOS_STR}/send.py --abort --msg \"<hard-constraint reason>\"`",
+            )
         )
     if task_type == "goal":
         return (
